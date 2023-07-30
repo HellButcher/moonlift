@@ -1,0 +1,8 @@
+[package]
+name = "moonlift"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+cranelift = "0.98.1"
+thiserror = "1.0.44"
