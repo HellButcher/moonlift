@@ -425,7 +425,7 @@ impl<S: Source> Lexer<S> {
                 if c == b'0' && matches!(self.source.read_next()?, Some(b'x' | b'X')) {
                     let i = self.read_hex_integer()?;
                     // TODO: Hex Exponents and floats
-                    return Ok(Token::Number(Number::Integer(i)));
+                    return Ok(Token::Number(Number::Integer(i as i64)));
                 } else {
                     self.source.unwind();
                     let n = self.read_decimal_integer()?;
@@ -666,14 +666,14 @@ impl<S: Source> Lexer<S> {
     }
 
     fn read_decimal_integer(&mut self) -> Result<Number, LexerError<S::Error>> {
-        let mut result: u64 = 0;
+        let mut result: i64 = 0;
         while let Some(c) = self.source.read_next()? {
             let value = match c {
                 b'0'..=b'9' => c - b'0',
                 _ => break,
             };
-            if let Some(r) = result.checked_mul(10 as u64) {
-                if let Some(r) = r.checked_add(value as u64) {
+            if let Some(r) = result.checked_mul(10 as i64) {
+                if let Some(r) = r.checked_add(value as i64) {
                     result = r;
                     continue;
                 }
@@ -814,7 +814,7 @@ mod tests {
         assert_tokens!(lexer => {
             Token::Number(Number::Integer(i)) if i == 1337,
             Token::Number(Number::Integer(i)) if i == 0x1337ff,
-            Token::Number(Number::Integer(i)) if i == 0xffffffffffffff12, // ind overflow
+            Token::Number(Number::Integer(i)) if i == 0xffffffffffffff12u64 as i64, // ind overflow
             Token::Number(Number::Float(f)) if f == 28446744073709551615f64, // int overflow (converted to float)
         });
     }

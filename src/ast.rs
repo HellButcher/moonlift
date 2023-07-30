@@ -1,14 +1,15 @@
 #[derive(Copy, Clone, PartialEq, Debug)]
 pub enum Number {
-    Integer(u64),
+    Integer(i64),
     Float(f64),
 }
 
 #[derive(Debug)]
 pub enum Statement {
     Empty,
-    Expr(Expression),
-    Return(Expression),
+    //Expr(Expression),
+    FunctCall(Box<FunctionCall>),
+    Return(Vec<Expression>),
     Break,
     Assign {
         vars: Vec<Expression>,
@@ -18,16 +19,16 @@ pub enum Statement {
     Goto(String),
     Do(Block),
     While {
-        cond: Expression,
+        cond: Box<Expression>,
         block: Block,
     },
     Repeat {
         block: Block,
-        cond: Expression,
+        cond: Box<Expression>,
     },
     If {
         ifcases: Vec<(Expression, Block)>,
-        elsecase: Option<Block>,
+        elsecase: Block,
     },
     For {
         var: String,
@@ -189,7 +190,7 @@ pub enum Expression {
     String(String),
     Var(String),
     FunctDef(Params, Block),
-    FunctCall(Box<Expression>, String, Vec<Expression>),
+    FunctCall(Box<FunctionCall>),
     Index(Box<Expression>, Box<Expression>),
     Field(Box<Expression>, String),
     Unary(UnaryOp, Box<Expression>),
@@ -211,6 +212,14 @@ pub enum Field {
 }
 
 pub type Block = Vec<Statement>;
+
+#[derive(Debug)]
+pub struct FunctionCall {
+    pub prefix: Expression,
+    pub method: String,
+    pub args: Vec<Expression>,
+}
+
 #[derive(Debug)]
 pub struct FuncName {
     pub qname: Vec<String>,

@@ -2,15 +2,24 @@ use moonlift::Source;
 use std::fs;
 use std::path::Path;
 
-fn parse_test(path: impl AsRef<Path>) {
+fn parse_test(path: impl AsRef<Path>) -> Source {
     let path = path.as_ref();
     eprintln!("parsing {}", path.display());
-    let s = Source::read(fs::OpenOptions::new().read(true).open(path).unwrap());
+    match Source::read(fs::OpenOptions::new().read(true).open(path).unwrap()) {
+        Ok(s) => s,
+        Err(e) => panic!("Error while parsing {}: {:?}", path.display(), e),
+    }
+}
+
+fn compile_test(source: &Source) {
+    let mut jit = moonlift::jit::JIT::new();
+    jit.compile(source).unwrap()
 }
 
 #[test]
-fn parse_test__all() {
-    parse_test("lua/testes/all.lua");
+fn parse_and_compile_test__all() {
+    let s = parse_test("lua/testes/all.lua");
+    compile_test(&s);
 }
 #[test]
 fn parse_test__api() {

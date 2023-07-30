@@ -5,7 +5,7 @@ use crate::{
     lexer::{Lexer, LexerError, Source, Token},
 };
 
-#[derive(thiserror::Error)]
+#[derive(thiserror::Error, Debug)]
 pub enum ParseError<E = Infallible> {
     #[error(transparent)]
     LexerError(#[from] LexerError<E>),
@@ -55,6 +55,16 @@ impl<'a, S: Source> Parser<'a, S> {
         }
     }
 
+    fn try_keyword(&mut self, kw: &str) -> Result<bool, LexerError<S::Error>> {
+        match self.peek_token()? {
+            Token::Keyword(k) if *k == kw => {
+                self.skip_token();
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
+    }
+
     fn expect_keyword(&mut self, kw: &'static str) -> Result<(), ParseError<S::Error>> {
         match self.next_token()? {
             Token::Keyword(k) if k == kw => Ok(()),
@@ -91,6 +101,17 @@ impl<'a, S: Source> Parser<'a, S> {
         let mut block = Block::new();
         while let Some(s) = self.try_parse_statement()? {
             block.push(s);
+        }
+        if self.try_keyword("return")? {
+            let mut exprs = Vec::new();
+            if Self::is_ll1_expression(self.peek_token()?) {
+                exprs.push(self.parse_expression()?);
+                while self.try_symbol(",")? {
+                    exprs.push(self.parse_expression()?);
+                }
+            }
+            block.push(Statement::Return(exprs));
+            self.try_symbol(";")?;
         }
         Ok(block)
     }
@@ -138,7 +159,10 @@ impl<'a, S: Source> Parser<'a, S> {
                             }
                             Token::Keyword("end") => {
                                 self.skip_token();
-                                return Ok(Some(Statement::If { ifcases, elsecase }));
+                                return Ok(Some(Statement::If {
+                                    ifcases,
+                                    elsecase: elsecase.unwrap_or_default(),
+                                }));
                             }
                             t if elsecase.is_none() => {
                                 return Err(ParseError::UnexpectedTokenError(
@@ -158,7 +182,7 @@ impl<'a, S: Source> Parser<'a, S> {
                 }
                 Token::Keyword("while") => {
                     self.skip_token();
-                    let cond = self.parse_expression()?;
+                    let cond = Box::new(self.parse_expression()?);
                     self.expect_keyword("do")?;
                     let block = self.parse_block()?;
                     self.expect_keyword("end")?;
@@ -168,7 +192,7 @@ impl<'a, S: Source> Parser<'a, S> {
                     self.skip_token();
                     let block = self.parse_block()?;
                     self.expect_keyword("until")?;
-                    let cond = self.parse_expression()?;
+                    let cond = Box::new(self.parse_expression()?);
                     return Ok(Some(Statement::Repeat { block, cond }));
                 }
                 Token::Keyword("for") => {
@@ -234,8 +258,8 @@ impl<'a, S: Source> Parser<'a, S> {
                     }
                 }
                 Token::Symbol("(") | Token::Name(_) => match self.parse_prefixexpr()? {
-                    e @ Expression::FunctCall(..) => {
-                        return Ok(Some(Statement::Expr(e)));
+                    Expression::FunctCall(fc) => {
+                        return Ok(Some(Statement::FunctCall(fc)));
                     }
                     e if e.is_lvalue() => {
                         let mut vars = vec![e];
@@ -289,6 +313,16 @@ impl<'a, S: Source> Parser<'a, S> {
     #[inline]
     fn parse_expression(&mut self) -> Result<Expression, ParseError<S::Error>> {
         self.parse_expression_with_precedence(0)
+    }
+
+    fn is_ll1_expression(token: &Token) -> bool {
+        matches!(
+            token,
+            Token::Keyword("nil" | "false" | "true" | "..." | "function" | "{" | "(")
+                | Token::Number(_)
+                | Token::String(_)
+                | Token::Name(_)
+        ) || matches!(token, Token::Keyword(s) | Token::Symbol(s) if UnaryOp::from_str(s).is_some())
     }
 
     fn parse_expression_with_precedence(
@@ -405,13 +439,21 @@ impl<'a, S: Source> Parser<'a, S> {
                 }
                 Token::Symbol(":") => {
                     self.skip_token();
-                    let n = self.expect_name()?;
-                    let a = self.parse_args()?;
-                    e = Expression::FunctCall(Box::new(e), n, a)
+                    let method = self.expect_name()?;
+                    let args = self.parse_args()?;
+                    e = Expression::FunctCall(Box::new(FunctionCall {
+                        prefix: e,
+                        method,
+                        args,
+                    }))
                 }
                 Token::Symbol("(" | "{") | Token::String(_) => {
                     let args = self.parse_args()?;
-                    e = Expression::FunctCall(Box::new(e), String::new(), args)
+                    e = Expression::FunctCall(Box::new(FunctionCall {
+                        prefix: e,
+                        method: String::new(),
+                        args,
+                    }))
                 }
                 _ => return Ok(e),
             }
