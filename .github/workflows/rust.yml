@@ -22,6 +22,7 @@ jobs:
           - nightly
     steps:
     - uses: actions/checkout@v3
+      submodules: true
     - name: Install Toolchain
       run: |
         rustup toolchain install ${{ matrix.channel }} --no-self-update --profile minimal -c "clippy,rustfmt"
