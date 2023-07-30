@@ -5,7 +5,7 @@ use crate::{
     lexer::{Lexer, LexerError, Source, Token},
 };
 
-#[derive(thiserror::Error, Debug)]
+#[derive(thiserror::Error, Debug, PartialEq)]
 pub enum ParseError<E = Infallible> {
     #[error(transparent)]
     LexerError(#[from] LexerError<E>),
@@ -377,6 +377,7 @@ impl<'a, S: Source> Parser<'a, S> {
             }
             t => return Err(ParseError::UnexpectedTokenError(t.name(), "expression")),
         };
+
         while let Some((s, op, precedence)) = self.try_infix_op(base_precedence)? {
             let e2 = self.parse_expression_with_precedence(precedence)?;
             let mut operands = vec![e, e2];
@@ -392,7 +393,7 @@ impl<'a, S: Source> Parser<'a, S> {
         &mut self,
         base_precedence: u8,
     ) -> Result<Option<(&'static str, InfixOp, u8)>, LexerError<S::Error>> {
-        if let Token::Symbol(s) = self.peek_token()? {
+        if let Token::Symbol(s) | Token::Keyword(s) = self.peek_token()? {
             let s = *s;
             if let Some(op) = InfixOp::from_str(s) {
                 let precedence = op.precedence_level();
@@ -586,5 +587,130 @@ impl<'a, S: Source> Parser<'a, S> {
             String::new()
         };
         Ok((name, attrib))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::lexer::Lexer;
+
+    #[test]
+    fn expr1() {
+        let mut lexer = Lexer::from_bytes("not a and b or c and d > -e");
+        let expr = Parser::new(&mut lexer).parse_expression();
+        assert_eq!(
+            Ok(Expression::Infix(
+                InfixOp::Or,
+                vec![
+                    Expression::Infix(
+                        InfixOp::And,
+                        vec![
+                            Expression::Unary(
+                                UnaryOp::Not,
+                                Box::new(Expression::Var("a".to_string()))
+                            ),
+                            Expression::Var("b".to_string())
+                        ]
+                    ),
+                    Expression::Infix(
+                        InfixOp::And,
+                        vec![
+                            Expression::Var("c".to_owned()),
+                            Expression::Infix(
+                                InfixOp::Greater,
+                                vec![
+                                    Expression::Var("d".to_owned()),
+                                    Expression::Unary(
+                                        UnaryOp::Minus,
+                                        Box::new(Expression::Var("e".to_owned()))
+                                    )
+                                ]
+                            )
+                        ]
+                    )
+                ]
+            )),
+            expr
+        );
+    }
+
+    #[test]
+    fn expr2() {
+        let mut lexer = Lexer::from_bytes("t1.n == (t2.n or #t2) + 1");
+        let expr = Parser::new(&mut lexer).parse_expression();
+        assert_eq!(
+            Ok(Expression::Infix(
+                InfixOp::Eq,
+                vec![
+                    Expression::Field(Box::new(Expression::Var("t1".to_string())), "n".to_string()),
+                    Expression::Infix(
+                        InfixOp::Add,
+                        vec![
+                            Expression::Infix(
+                                InfixOp::Or,
+                                vec![
+                                    Expression::Field(
+                                        Box::new(Expression::Var("t2".to_string())),
+                                        "n".to_string()
+                                    ),
+                                    Expression::Unary(
+                                        UnaryOp::Len,
+                                        Box::new(Expression::Var("t2".to_string()))
+                                    )
+                                ]
+                            ),
+                            Expression::Number(Number::Integer(1))
+                        ]
+                    )
+                ]
+            )),
+            expr
+        );
+    }
+
+    #[test]
+    fn stmt1() {
+        let mut lexer = Lexer::from_bytes(
+            "
+          assert(t1.n == 1)
+          for i = 2, t1.n do assert(true) end
+        ",
+        );
+        let mut parser = Parser::new(&mut lexer);
+        let a = parser.try_parse_statement();
+        assert_eq!(
+            Ok(Some(Statement::FunctCall(Box::new(FunctionCall {
+                prefix: Expression::Var("assert".to_string()),
+                method: String::new(),
+                args: vec![Expression::Infix(
+                    InfixOp::Eq,
+                    vec![
+                        Expression::Field(
+                            Box::new(Expression::Var("t1".to_string())),
+                            "n".to_string()
+                        ),
+                        Expression::Number(Number::Integer(1))
+                    ]
+                )],
+            })))),
+            a
+        );
+        let b = parser.try_parse_statement();
+        assert_eq!(
+            Ok(Some(Statement::For {
+                var: "i".to_string(),
+                exprs: vec![
+                    Expression::Number(Number::Integer(2)),
+                    Expression::Field(Box::new(Expression::Var("t1".to_string())), "n".to_string())
+                ],
+                block: vec![Statement::FunctCall(Box::new(FunctionCall {
+                    prefix: Expression::Var("assert".to_string()),
+                    method: String::new(),
+                    args: vec![Expression::Boolean(true)]
+                }))],
+            })),
+            b
+        );
     }
 }

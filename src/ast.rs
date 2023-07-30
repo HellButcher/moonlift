@@ -4,7 +4,7 @@ pub enum Number {
     Float(f64),
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum Statement {
     Empty,
     //Expr(Expression),
@@ -181,7 +181,7 @@ impl InfixOp {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum Expression {
     Nil,
     Ellipsis,
@@ -204,7 +204,7 @@ impl Expression {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum Field {
     Exp(Expression),
     Named(String, Expression),
@@ -213,20 +213,20 @@ pub enum Field {
 
 pub type Block = Vec<Statement>;
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct FunctionCall {
     pub prefix: Expression,
     pub method: String,
     pub args: Vec<Expression>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct FuncName {
     pub qname: Vec<String>,
     pub method: bool,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct Params {
     pub names: Vec<String>,
     pub variadic: bool,

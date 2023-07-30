@@ -2,7 +2,7 @@ use std::{convert::Infallible, fmt, fmt::Display, io, str::Utf8Error};
 
 use crate::ast::Number;
 
-#[derive(thiserror::Error, Debug)]
+#[derive(thiserror::Error, Debug, PartialEq)]
 pub enum LexerError<E> {
     #[error(transparent)]
     IoError(#[from] E),
@@ -614,6 +614,7 @@ impl<S: Source> Lexer<S> {
                 };
                 self.value.push(match c {
                     b'a' => 0x07,
+                    b'0' => 0x00,
                     b'b' => 0x08,
                     b'f' => 0x0C,
                     b'n' => b'\n',
@@ -670,7 +671,10 @@ impl<S: Source> Lexer<S> {
         while let Some(c) = self.source.read_next()? {
             let value = match c {
                 b'0'..=b'9' => c - b'0',
-                _ => break,
+                _ => {
+                    self.source.unwind();
+                    break;
+                }
             };
             if let Some(r) = result.checked_mul(10 as i64) {
                 if let Some(r) = r.checked_add(value as i64) {
@@ -685,7 +689,10 @@ impl<S: Source> Lexer<S> {
             while let Some(c) = self.source.read_next()? {
                 let value = match c {
                     b'0'..=b'9' => c - b'0',
-                    _ => break,
+                    _ => {
+                        self.source.unwind();
+                        break;
+                    }
                 };
                 result *= 10f64;
                 result += value as f64;
@@ -702,7 +709,10 @@ impl<S: Source> Lexer<S> {
                 b'0'..=b'9' => c - b'0',
                 b'a'..=b'f' => c - b'a' + 10,
                 b'A'..=b'F' => c - b'A' + 10,
-                _ => break,
+                _ => {
+                    self.source.unwind();
+                    break;
+                }
             };
             result <<= 4;
             result |= value as u64;
@@ -810,12 +820,16 @@ mod tests {
     fn numbers() {
         // TODO: Floats not yet implemented
         let mut lexer =
-            Lexer::from_bytes("1337 0x1337ff 0xffffffffffffffff12 28446744073709551615");
+            Lexer::from_bytes("1337/0x1337ff,0xffffffffffffffff12,28446744073709551615]");
         assert_tokens!(lexer => {
             Token::Number(Number::Integer(i)) if i == 1337,
+            Token::Symbol("/"),
             Token::Number(Number::Integer(i)) if i == 0x1337ff,
+            Token::Symbol(","),
             Token::Number(Number::Integer(i)) if i == 0xffffffffffffff12u64 as i64, // ind overflow
+            Token::Symbol(","),
             Token::Number(Number::Float(f)) if f == 28446744073709551615f64, // int overflow (converted to float)
+            Token::Symbol("]"),
         });
     }
 
