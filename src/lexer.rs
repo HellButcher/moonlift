@@ -2,7 +2,7 @@ use std::{convert::Infallible, fmt, fmt::Display, io, str::Utf8Error};
 
 use crate::ast::Number;
 
-#[derive(thiserror::Error)]
+#[derive(thiserror::Error, Debug)]
 pub enum LexerError<E> {
     #[error(transparent)]
     IoError(#[from] E),
@@ -518,7 +518,10 @@ impl<S: Source> Lexer<S> {
         loop {
             match self.source.read_next()? {
                 Some(b'=') => count += 1,
-                Some(b'[') => self.read_until_end_of_long_string_block::<true>(count)?,
+                Some(b'[') => {
+                    self.read_until_end_of_long_string_block::<true>(count)?;
+                    return Ok(true);
+                }
                 None if count > 0 => {
                     return Err(LexerError::UnexpectedEOF("long string ([===[...]===])"))
                 }
@@ -677,14 +680,16 @@ impl<S: Source> Lexer<S> {
             }
             // switch to float on overflow (only decimals, not hex)
             let mut result = result as f64;
+            result *= 10f64;
+            result += value as f64;
             while let Some(c) = self.source.read_next()? {
                 let value = match c {
                     b'0'..=b'9' => c - b'0',
                     _ => break,
                 };
+                result *= 10f64;
+                result += value as f64;
             }
-            result *= 10f64;
-            result += value as f64;
             return Ok(Number::Float(result));
         }
         Ok(Number::Integer(result))
@@ -703,5 +708,127 @@ impl<S: Source> Lexer<S> {
             result |= value as u64;
         }
         Ok(result)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    macro_rules! assert_match {
+        ($p:pat $(if $c:expr)?, $e:expr) => {
+            match $e {
+                $p $(if $c)?=> {}
+                t => panic!("expected {} but got {:?}", stringify!($p $(if $c)?), t),
+            }
+        };
+    }
+
+    macro_rules! assert_tokens {
+        ($lexer:expr => { $($p:pat $(if $c:expr)?),+ $(,)?}) => {
+            let lexer = &mut $lexer;
+            $(
+                assert_match!(Ok($p) $(if $c)?, lexer.next_token());
+            )+
+            assert_match!(Ok(Token::Eof), lexer.next_token());
+        };
+    }
+
+    #[test]
+    fn keywords() {
+        let mut lexer = Lexer::from_bytes("and break do else a_name elseif ");
+        assert_tokens!(lexer => {
+            Token::Keyword("and"),
+            Token::Keyword("break"),
+            Token::Keyword("do"),
+            Token::Keyword("else"),
+            Token::Name(n) if n == "a_name",
+            Token::Keyword("elseif"),
+        });
+    }
+
+    #[test]
+    fn symbols() {
+        let mut lexer =
+            Lexer::from_bytes("+-*///~====~<--Comment\n[]{}()]][[\nfoo]]<<<=<>>>=>%:::.....,.;#");
+        assert_tokens!(lexer => {
+            Token::Symbol("+"),
+            Token::Symbol("-"),
+            Token::Symbol("*"),
+            Token::Symbol("//"),
+            Token::Symbol("/"),
+            Token::Symbol("~="),
+            Token::Symbol("=="),
+            Token::Symbol("="),
+            Token::Symbol("~"),
+            Token::Symbol("<"),
+            // Token::Comment, -- ignored
+            Token::Symbol("["),
+            Token::Symbol("]"),
+            Token::Symbol("{"),
+            Token::Symbol("}"),
+            Token::Symbol("("),
+            Token::Symbol(")"),
+            Token::Symbol("]"),
+            Token::Symbol("]"),
+            Token::String(s) if s == "foo",
+            Token::Symbol("<<"),
+            Token::Symbol("<="),
+            Token::Symbol("<"),
+            Token::Symbol(">>"),
+            Token::Symbol(">="),
+            Token::Symbol(">"),
+            Token::Symbol("%"),
+            Token::Symbol("::"),
+            Token::Symbol(":"),
+            Token::Symbol("..."),
+            Token::Symbol(".."),
+            Token::Symbol(","),
+            Token::Symbol("."),
+            Token::Symbol(";"),
+            Token::Symbol("#"),
+        });
+    }
+
+    #[test]
+    fn strings() {
+        let mut lexer = Lexer::from_bytes(
+            "\"str1\"\"str2\"'str3'\"with\\nescape\\\\s\\\"t\"[[\n\"long\" string]][===[long [==[ one]===][[long ]==] two]]",
+        );
+        assert_tokens!(lexer => {
+            Token::String(s) if s == "str1",
+            Token::String(s) if s == "str2",
+            Token::String(s) if s == "str3",
+            Token::String(s) if s == "with\nescape\\s\"t",
+            Token::String(s) if s == "\"long\" string",
+            Token::String(s) if s == "long [==[ one",
+            Token::String(s) if s == "long ]==] two",
+        });
+    }
+
+    #[test]
+    fn numbers() {
+        // TODO: Floats not yet implemented
+        let mut lexer =
+            Lexer::from_bytes("1337 0x1337ff 0xffffffffffffffff12 28446744073709551615");
+        assert_tokens!(lexer => {
+            Token::Number(Number::Integer(i)) if i == 1337,
+            Token::Number(Number::Integer(i)) if i == 0x1337ff,
+            Token::Number(Number::Integer(i)) if i == 0xffffffffffffff12, // ind overflow
+            Token::Number(Number::Float(f)) if f == 28446744073709551615f64, // int overflow (converted to float)
+        });
+    }
+
+    #[test]
+    fn test_comments() {
+        let mut lexer = Lexer::from_bytes(
+            "and --line comment\n\n or --[[ long[==[ \n comment ]] for --[=[ \n ]] long2 ]=] local",
+        );
+        assert_tokens!(lexer => {
+            Token::Keyword("and"),
+            Token::Keyword("or"),
+            Token::Keyword("for"),
+            Token::Keyword("local"),
+        });
     }
 }
