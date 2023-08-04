@@ -4,6 +4,25 @@ pub enum Number {
     Float(f64),
 }
 
+impl Number {
+    #[inline]
+    pub fn into_f64(self) -> f64 {
+        match self {
+            Self::Integer(i) => i as f64,
+            Self::Float(f) => f,
+        }
+    }
+
+    #[inline]
+    pub fn as_f64_mut(&mut self) -> &mut f64 {
+        if let Self::Integer(i) = self {
+            *self = Self::Float(*i as f64);
+        }
+        let Self::Float(f) = self else { unreachable!() };
+        f
+    }
+}
+
 #[derive(Debug, PartialEq)]
 pub enum Statement {
     Empty,
@@ -187,7 +206,7 @@ pub enum Expression {
     Ellipsis,
     Boolean(bool),
     Number(Number),
-    String(String),
+    String(Box<[u8]>),
     Var(String),
     FunctDef(Params, Block),
     FunctCall(Box<FunctionCall>),

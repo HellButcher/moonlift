@@ -14,6 +14,8 @@ pub enum LexerError<E> {
     UnexpectedCharacter(char, &'static str),
     #[error("Invalid escape sequence {0:?}")]
     InvalidEscapeSequence(char),
+    #[error("Invalid number")]
+    InvalidNumber,
     #[error("Unexpected Line break")]
     UnexpectedLineBreak,
 }
@@ -22,7 +24,7 @@ pub enum LexerError<E> {
 pub enum Token {
     Keyword(&'static str),
     Name(String),
-    String(String),
+    String(Box<[u8]>),
     Number(Number),
     Whitespace,
     Comment,
@@ -67,6 +69,7 @@ const POS_EOF: usize = !0;
 pub struct ReadSource<R> {
     read: R,
     pos: usize,
+    buf_pos: usize,
     buf_end: usize,
     buf: [u8; BUF_SIZE],
 }
@@ -77,6 +80,7 @@ impl<R> ReadSource<R> {
         Self {
             read,
             pos: 0,
+            buf_pos: 0,
             buf_end: 0,
             buf: [0; BUF_SIZE],
         }
@@ -95,34 +99,29 @@ impl<R: io::Read> Source for ReadSource<R> {
         if self.pos == POS_EOF {
             return Ok(None);
         }
-        if self.buf_end == 0 {
+        if self.buf_pos >= self.buf_end {
             // re-fill buffer
             self.buf_end = self.read.read(&mut self.buf)?;
+            self.buf_pos = 0;
             if self.buf_end == 0 {
                 self.pos = POS_EOF;
                 return Ok(None);
             }
         }
-        let buf_pos = self.pos & (BUF_SIZE - 1);
-        if buf_pos >= self.buf_end {
-            self.pos = POS_EOF;
-            return Ok(None);
-        }
 
         // SAFETY: bounds checked
-        let c = unsafe { *self.buf.get_unchecked(buf_pos) };
+        let c = unsafe { *self.buf.get_unchecked(self.buf_pos) };
         self.pos += 1;
-        if buf_pos >= BUF_SIZE - 1 {
-            self.buf_end = 0;
-        }
+        self.buf_pos += 1;
         return Ok(Some(c));
     }
 
     #[inline]
     fn unwind(&mut self) {
         if self.pos != POS_EOF {
-            debug_assert_ne!(self.pos, 0);
+            debug_assert_ne!(self.buf_pos, 0);
             self.pos -= 1;
+            self.buf_pos -= 1;
         }
     }
 
@@ -273,8 +272,9 @@ impl<S: Source> Lexer<S> {
             b'[' => {
                 self.value.clear();
                 if self.read_long_string_block()? {
-                    let s = String::from_utf8(std::mem::take(&mut self.value))
-                        .map_err(|e| LexerError::Utf8Error(e.utf8_error()))?;
+                    //let s = String::from_utf8(std::mem::take(&mut self.value))
+                    //    .map_err(|e| LexerError::Utf8Error(e.utf8_error()))?;
+                    let s: Box<[u8]> = self.value.as_slice().into();
                     return Ok(Token::String(s));
                 } else {
                     return Ok(Token::Symbol("["));
@@ -283,8 +283,9 @@ impl<S: Source> Lexer<S> {
             b'"' | b'\'' => {
                 self.value.clear();
                 self.read_until_end_of_string(c)?;
-                let s = String::from_utf8(std::mem::take(&mut self.value))
-                    .map_err(|e| LexerError::Utf8Error(e.utf8_error()))?;
+                //let s = String::from_utf8(std::mem::take(&mut self.value))
+                //    .map_err(|e| LexerError::Utf8Error(e.utf8_error()))?;
+                let s: Box<[u8]> = self.value.as_slice().into();
                 return Ok(Token::String(s));
             }
             b':' => {
@@ -343,19 +344,45 @@ impl<S: Source> Lexer<S> {
                     return Ok(Token::Symbol("="));
                 }
             }
-            b'.' => {
-                if matches!(self.source.read_next()?, Some(b'.')) {
+            b'.' => match self.source.read_next()? {
+                Some(b'.') => {
                     if matches!(self.source.read_next()?, Some(b'.')) {
                         return Ok(Token::Symbol("..."));
                     } else {
                         self.source.unwind();
                         return Ok(Token::Symbol(".."));
                     }
-                } else {
+                }
+                Some(c @ (b'0'..=b'9')) => {
+                    let mut div = 10f64;
+                    let mut f = (c - b'0') as f64;
+                    let mut c;
+                    loop {
+                        c = self.source.read_next()?;
+                        let Some(v) = c.and_then(Self::decimal_digit_value) else {
+                                break;
+                            };
+                        div *= 10f64;
+                        f *= 10f64;
+                        f += v as f64;
+                    }
+                    f /= div;
+
+                    match c {
+                        Some(b'e' | b'E') => {
+                            f *= 10f64.powi(self.read_exponent()?);
+                        }
+                        Some(_) => self.source.unwind(),
+                        None => {}
+                    }
+
+                    return Ok(Token::Number(Number::Float(f)));
+                }
+                _ => {
                     self.source.unwind();
                     return Ok(Token::Symbol("."));
                 }
-            }
+            },
             b'+' => {
                 return Ok(Token::Symbol("+"));
             }
@@ -369,6 +396,12 @@ impl<S: Source> Lexer<S> {
                 return Ok(Token::Symbol("^"));
             }
             b'#' => {
+                if self.line == 1 && self.source.pos() == 1 {
+                    // comment in first line (if file starts with '#').
+                    // For she-bang `#!/usr/bin/...`
+                    self.read_until_end_of_line()?;
+                    return Ok(Token::Comment);
+                }
                 return Ok(Token::Symbol("#"));
             }
             b'&' => {
@@ -424,13 +457,71 @@ impl<S: Source> Lexer<S> {
             b'0'..=b'9' => {
                 if c == b'0' && matches!(self.source.read_next()?, Some(b'x' | b'X')) {
                     let i = self.read_hex_integer()?;
-                    // TODO: Hex Exponents and floats
-                    return Ok(Token::Number(Number::Integer(i as i64)));
+                    let mut c = self.source.read_next()?;
+                    if !matches!(c, Some(b'.' | b'e' | b'E' | b'p' | b'P')) {
+                        self.source.unwind();
+                        return Ok(Token::Number(Number::Integer(i)));
+                    }
+                    let mut f = i as f64;
+                    if matches!(c, Some(b'.')) {
+                        let mut div = 1f64;
+                        loop {
+                            c = self.source.read_next()?;
+                            let Some(v) = c.and_then(Self::hex_digit_value) else {
+                                break;
+                            };
+                            div *= 16f64;
+                            f *= 16f64;
+                            f += v as f64;
+                        }
+                        f /= div;
+                    }
+
+                    match c {
+                        Some(b'e' | b'E') => {
+                            f *= 10f64.powi(self.read_exponent()?);
+                        }
+                        Some(b'p' | b'P') => {
+                            f *= 2f64.powi(self.read_exponent()?);
+                        }
+                        Some(_) => self.source.unwind(),
+                        None => {}
+                    }
+
+                    return Ok(Token::Number(Number::Float(f)));
                 } else {
                     self.source.unwind();
                     let n = self.read_decimal_integer()?;
-                    // TODO: Decimal Exponents and floats
-                    return Ok(Token::Number(n));
+                    let mut c = self.source.read_next()?;
+                    if !matches!(c, Some(b'.' | b'e' | b'E')) {
+                        self.source.unwind();
+                        return Ok(Token::Number(n));
+                    }
+                    let mut f = n.into_f64();
+
+                    if matches!(c, Some(b'.')) {
+                        let mut div = 1f64;
+                        loop {
+                            c = self.source.read_next()?;
+                            let Some(v) = c.and_then(Self::decimal_digit_value) else {
+                                break;
+                            };
+                            div *= 10f64;
+                            f *= 10f64;
+                            f += v as f64;
+                        }
+                        f /= div;
+                    }
+
+                    match c {
+                        Some(b'e' | b'E') => {
+                            f *= 10f64.powi(self.read_exponent()?);
+                        }
+                        Some(_) => self.source.unwind(),
+                        None => {}
+                    }
+
+                    return Ok(Token::Number(Number::Float(f)));
                 }
             }
             b' ' | b'\t' | b'\r' | b'\n' => {
@@ -470,46 +561,47 @@ impl<S: Source> Lexer<S> {
     }
 
     fn read_comment(&mut self) -> Result<Token, LexerError<S::Error>> {
-        let mut r = match self.source.read_next()? {
-            Some(b'[') => {
-                let mut count = 0;
-                loop {
-                    match self.source.read_next()? {
-                        Some(b'=') => count += 1,
-                        Some(b'[') => {
-                            self.read_until_end_of_long_string_block::<false>(count)?;
-                            return Ok(Token::Comment);
-                        }
-                        r => break r,
+        if matches!(self.source.read_next()?, Some(b'[')) {
+            let mut count = 0;
+            loop {
+                match self.source.read_next()? {
+                    Some(b'=') => count += 1,
+                    Some(b'[') => {
+                        self.read_until_end_of_long_string_block::<false>(count)?;
+                        return Ok(Token::Comment);
                     }
+                    _ => break,
                 }
             }
-            r => r,
-        };
-        loop {
-            match r {
-                Some(b'\n') => {
+        }
+        self.source.unwind();
+        self.read_until_end_of_line()?;
+        return Ok(Token::Comment);
+    }
+
+    fn read_until_end_of_line(&mut self) -> Result<(), LexerError<S::Error>> {
+        while let Some(c) = self.source.read_next()? {
+            match c {
+                b'\n' => {
                     if !matches!(self.source.read_next()?, Some(b'\r')) {
                         self.source.unwind();
                     }
                     self.line += 1;
                     self.line_pos = self.source.pos();
-                    break;
+                    return Ok(());
                 }
-                Some(b'\r') => {
+                b'\r' => {
                     if !matches!(self.source.read_next()?, Some(b'\n')) {
                         self.source.unwind();
                     }
                     self.line += 1;
                     self.line_pos = self.source.pos();
-                    break;
+                    return Ok(());
                 }
-                _ => {
-                    r = self.source.read_next()?;
-                }
+                _ => {}
             }
         }
-        return Ok(Token::Comment);
+        Ok(())
     }
 
     fn read_long_string_block(&mut self) -> Result<bool, LexerError<S::Error>> {
@@ -570,31 +662,31 @@ impl<S: Source> Lexer<S> {
                 }
                 Some(c) => {
                     count2 = !0;
-                    if FILL {
-                        match c {
-                            b'\n' => {
-                                if !matches!(self.source.read_next()?, Some(b'\r')) {
-                                    self.source.unwind();
-                                }
-                                if !self.value.is_empty() || first_nl_seen {
-                                    self.value.push(b'\n');
-                                }
-                                first_nl_seen = true;
-                                self.line += 1;
-                                self.line_pos = self.source.pos();
+                    match c {
+                        b'\n' => {
+                            if !matches!(self.source.read_next()?, Some(b'\r')) {
+                                self.source.unwind();
                             }
-                            b'\r' => {
-                                if !matches!(self.source.read_next()?, Some(b'\n')) {
-                                    self.source.unwind();
-                                }
-                                if !self.value.is_empty() || first_nl_seen {
-                                    self.value.push(b'\n');
-                                }
-                                first_nl_seen = true;
-                                self.line += 1;
-                                self.line_pos = self.source.pos();
+                            if FILL && (!self.value.is_empty() || first_nl_seen) {
+                                self.value.push(b'\n');
                             }
-                            _ => {
+                            first_nl_seen = true;
+                            self.line += 1;
+                            self.line_pos = self.source.pos();
+                        }
+                        b'\r' => {
+                            if !matches!(self.source.read_next()?, Some(b'\n')) {
+                                self.source.unwind();
+                            }
+                            if FILL && (!self.value.is_empty() || first_nl_seen) {
+                                self.value.push(b'\n');
+                            }
+                            first_nl_seen = true;
+                            self.line += 1;
+                            self.line_pos = self.source.pos();
+                        }
+                        _ => {
+                            if FILL {
                                 self.value.push(c);
                             }
                         }
@@ -628,25 +720,94 @@ impl<S: Source> Lexer<S> {
                         if !matches!(self.source.read_next()?, Some(b'\r')) {
                             self.source.unwind();
                         }
+                        self.line += 1;
+                        self.line_pos = self.source.pos();
                         b'\n'
                     }
                     b'\r' => {
                         if !matches!(self.source.read_next()?, Some(b'\n')) {
                             self.source.unwind();
                         }
+                        self.line += 1;
+                        self.line_pos = self.source.pos();
                         b'\n'
                     }
+                    b'0'..=b'9' => {
+                        // decimal (up to 3 digits)
+                        let mut v = c - b'0';
+                        if let Some(c @ (b'0'..=b'9')) = self.source.read_next()? {
+                            v *= 10;
+                            v += c - b'0';
+                            if let Some(c @ (b'0'..=b'9')) = self.source.read_next()? {
+                                v *= 10;
+                                v += c - b'0';
+                            } else {
+                                self.source.unwind();
+                            }
+                        } else {
+                            self.source.unwind();
+                        }
+                        v
+                    }
                     b'x' => {
-                        todo!("HEX escape `\\xFF` (2 digits; 0-255) ")
+                        // hex
+                        let Some(v) = self.source.read_next()?.and_then(Self::hex_digit_value) else {
+                            return Err(LexerError::InvalidEscapeSequence(c as char));
+                        };
+                        let Some(v2) = self.source.read_next()?.and_then(Self::hex_digit_value) else {
+                            return Err(LexerError::InvalidEscapeSequence(c as char));
+                        };
+                        v << 4 | v2
                     }
                     b'u' => {
-                        todo!("Unicode escape `\\u{{XXX}}` (one to eight digits; 0 to 2^31)")
+                        // unicode as utf-8 (\u{XXX})
+                        if !matches!(self.source.read_next()?, Some(b'{')) {
+                            return Err(LexerError::InvalidEscapeSequence(c as char));
+                        }
+                        let mut v = if let Some(v)= self.source.read_next()?.and_then(Self::hex_digit_value) {
+                            v as u32
+                        } else {
+                            return Err(LexerError::InvalidEscapeSequence(c as char));
+                        };
+                        for _ in 1..8 {
+                            let Some(v2) = self.source.read_next()?.and_then(Self::hex_digit_value) else {
+                                self.source.unwind();
+                                break;
+                            };
+                            v <<= 4;
+                            v |= v2 as u32;
+                        }
+                        if !matches!(self.source.read_next()?, Some(b'}')) {
+                            return Err(LexerError::InvalidEscapeSequence(c as char));
+                        }
+                        let Some(chr) = char::from_u32(v) else {
+                            return Err(LexerError::InvalidEscapeSequence(c as char));
+                        };
+                        let mut buf = [0u8;4];
+                        for c in chr.encode_utf8(&mut buf).as_bytes().iter().copied() {
+                            self.value.push(c);
+                        }
+                        continue;
                     }
                     b'z' => {
                         // skip whitespaces
                         loop {
                             match self.source.read_next()? {
-                                Some(b' ' | b'\t' | b'\n' | b'\r') => continue,
+                                Some(b'\n') => {
+                                    if !matches!(self.source.read_next()?, Some(b'\r')) {
+                                        self.source.unwind();
+                                    }
+                                    self.line += 1;
+                                    self.line_pos = self.source.pos();
+                                }
+                                Some(b'\r') => {
+                                    if !matches!(self.source.read_next()?, Some(b'\n')) {
+                                        self.source.unwind();
+                                    }
+                                    self.line += 1;
+                                    self.line_pos = self.source.pos();
+                                }
+                                Some(b' ' | b'\t') => {}
                                 _ => {
                                     self.source.unwind();
                                     break;
@@ -666,58 +827,90 @@ impl<S: Source> Lexer<S> {
         Err(LexerError::UnexpectedEOF("string"))
     }
 
+    #[inline]
+    fn decimal_digit_value(c: u8) -> Option<u8> {
+        match c {
+            b'0'..=b'9' => Some(c - b'0'),
+            _ => None,
+        }
+    }
+
     fn read_decimal_integer(&mut self) -> Result<Number, LexerError<S::Error>> {
-        let mut result: i64 = 0;
-        while let Some(c) = self.source.read_next()? {
-            let value = match c {
-                b'0'..=b'9' => c - b'0',
-                _ => {
-                    self.source.unwind();
-                    break;
-                }
-            };
+        let mut result = 0i64;
+        while let Some(v) = self.source.read_next()?.and_then(Self::decimal_digit_value) {
             if let Some(r) = result.checked_mul(10 as i64) {
-                if let Some(r) = r.checked_add(value as i64) {
+                if let Some(r) = r.checked_add(v as i64) {
                     result = r;
                     continue;
                 }
             }
-            // switch to float on overflow (only decimals, not hex)
+            // integer overflow: vonvert to float
             let mut result = result as f64;
             result *= 10f64;
-            result += value as f64;
-            while let Some(c) = self.source.read_next()? {
-                let value = match c {
-                    b'0'..=b'9' => c - b'0',
-                    _ => {
-                        self.source.unwind();
-                        break;
-                    }
-                };
+            result += v as f64;
+
+            while let Some(v) = self.source.read_next()?.and_then(Self::decimal_digit_value) {
                 result *= 10f64;
-                result += value as f64;
+                result += v as f64;
             }
+
+            self.source.unwind();
             return Ok(Number::Float(result));
         }
+        self.source.unwind();
         Ok(Number::Integer(result))
     }
 
-    fn read_hex_integer(&mut self) -> Result<u64, LexerError<S::Error>> {
-        let mut result = 0;
-        while let Some(c) = self.source.read_next()? {
-            let value = match c {
-                b'0'..=b'9' => c - b'0',
-                b'a'..=b'f' => c - b'a' + 10,
-                b'A'..=b'F' => c - b'A' + 10,
-                _ => {
-                    self.source.unwind();
-                    break;
-                }
-            };
-            result <<= 4;
-            result |= value as u64;
+    fn read_exponent(&mut self) -> Result<i32, LexerError<S::Error>> {
+        let mut c = self.source.read_next()?;
+        let negative = match c {
+            Some(b'-') => {
+                c = self.source.read_next()?;
+                true
+            }
+            Some(b'+') => {
+                c = self.source.read_next()?;
+                false
+            }
+            Some(b'0'..=b'9') => false,
+            Some(_) => {
+                self.source.unwind();
+                return Err(LexerError::InvalidNumber);
+            }
+            None => return Err(LexerError::UnexpectedEOF("number")),
+        };
+        let mut result = c
+            .and_then(Self::decimal_digit_value)
+            .ok_or(LexerError::InvalidNumber)? as i32;
+        while let Some(v) = self.source.read_next()?.and_then(Self::decimal_digit_value) {
+            result *= 10;
+            result += v as i32;
+        }
+        self.source.unwind();
+        if negative {
+            result *= -1;
         }
         Ok(result)
+    }
+
+    #[inline]
+    fn hex_digit_value(c: u8) -> Option<u8> {
+        match c {
+            b'0'..=b'9' => Some(c - b'0'),
+            b'a'..=b'f' => Some(c - b'a' + 10),
+            b'A'..=b'F' => Some(c - b'A' + 10),
+            _ => None,
+        }
+    }
+
+    fn read_hex_integer(&mut self) -> Result<i64, LexerError<S::Error>> {
+        let mut result = 0u64;
+        while let Some(v) = self.source.read_next()?.and_then(Self::hex_digit_value) {
+            result <<= 4;
+            result |= v as u64;
+        }
+        self.source.unwind();
+        Ok(result as i64)
     }
 }
 
@@ -781,7 +974,7 @@ mod tests {
             Token::Symbol(")"),
             Token::Symbol("]"),
             Token::Symbol("]"),
-            Token::String(s) if s == "foo",
+            Token::String(s) if s.as_ref() == b"foo",
             Token::Symbol("<<"),
             Token::Symbol("<="),
             Token::Symbol("<"),
@@ -806,13 +999,13 @@ mod tests {
             "\"str1\"\"str2\"'str3'\"with\\nescape\\\\s\\\"t\"[[\n\"long\" string]][===[long [==[ one]===][[long ]==] two]]",
         );
         assert_tokens!(lexer => {
-            Token::String(s) if s == "str1",
-            Token::String(s) if s == "str2",
-            Token::String(s) if s == "str3",
-            Token::String(s) if s == "with\nescape\\s\"t",
-            Token::String(s) if s == "\"long\" string",
-            Token::String(s) if s == "long [==[ one",
-            Token::String(s) if s == "long ]==] two",
+            Token::String(s) if s.as_ref() == b"str1",
+            Token::String(s) if s.as_ref() == b"str2",
+            Token::String(s) if s.as_ref() == b"str3",
+            Token::String(s) if s.as_ref() == b"with\nescape\\s\"t",
+            Token::String(s) if s.as_ref() == b"\"long\" string",
+            Token::String(s) if s.as_ref() == b"long [==[ one",
+            Token::String(s) if s.as_ref() == b"long ]==] two",
         });
     }
 

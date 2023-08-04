@@ -318,7 +318,8 @@ impl<'a, S: Source> Parser<'a, S> {
     fn is_ll1_expression(token: &Token) -> bool {
         matches!(
             token,
-            Token::Keyword("nil" | "false" | "true" | "..." | "function" | "{" | "(")
+            Token::Keyword("nil" | "false" | "true" | "function")
+                | Token::Symbol("..." | "{" | "(")
                 | Token::Number(_)
                 | Token::String(_)
                 | Token::Name(_)
@@ -360,9 +361,7 @@ impl<'a, S: Source> Parser<'a, S> {
                 Expression::FunctDef(params, block)
             }
             Token::Symbol("{") => {
-                self.skip_token();
-                let fields = self.parse_fieldlist()?;
-                self.expect_symbol("}")?;
+                let fields = self.parse_table()?;
                 Expression::Table(fields)
             }
             Token::Symbol("(") | Token::Name(_) => self.parse_prefixexpr()?,
@@ -461,13 +460,15 @@ impl<'a, S: Source> Parser<'a, S> {
         }
     }
 
-    fn parse_fieldlist(&mut self) -> Result<Vec<Field>, ParseError<S::Error>> {
+    fn parse_table(&mut self) -> Result<Vec<Field>, ParseError<S::Error>> {
+        self.expect_symbol("{")?;
         let mut fields = Vec::new();
         while !self.try_symbol("}")? {
             fields.push(self.parse_field()?);
             if matches!(self.peek_token()?, Token::Symbol("," | ";")) {
                 self.skip_token();
             } else {
+                self.expect_symbol("}")?;
                 break;
             }
         }
@@ -484,37 +485,43 @@ impl<'a, S: Source> Parser<'a, S> {
                 let e2 = self.parse_expression()?;
                 return Ok(Field::Index(e1, e2));
             }
-            Token::Name(_) => {
-                let Some(Token::Name(n)) = self.last_token.take() else { unreachable!() };
-                if self.try_symbol("=")? {
-                    let e = self.parse_expression()?;
-                    return Ok(Field::Named(n, e));
-                } else {
-                    return Ok(Field::Exp(Expression::Var(n)));
-                }
-            }
             _ => {
                 let e = self.parse_expression()?;
-                return Ok(Field::Exp(e));
+                match e {
+                    Expression::Var(name) => {
+                        if self.try_symbol("=")? {
+                            let e = self.parse_expression()?;
+                            return Ok(Field::Named(name, e));
+                        } else {
+                            return Ok(Field::Exp(Expression::Var(name)));
+                        }
+                    }
+                    e => return Ok(Field::Exp(e)),
+                }
             }
         }
+    }
+
+    fn parse_arglist(&mut self) -> Result<Vec<Expression>, ParseError<S::Error>> {
+        self.expect_symbol("(")?;
+        let mut args = Vec::new();
+        if !self.try_symbol(")")? {
+            args.push(self.parse_expression()?);
+            while self.try_symbol(",")? {
+                args.push(self.parse_expression()?);
+            }
+            self.expect_symbol(")")?;
+        }
+        Ok(args)
     }
 
     fn parse_args(&mut self) -> Result<Vec<Expression>, ParseError<S::Error>> {
         match self.peek_token()? {
             Token::Symbol("(") => {
-                self.skip_token();
-                let mut args = vec![self.parse_expression()?];
-                while self.try_symbol(",")? {
-                    args.push(self.parse_expression()?);
-                }
-                self.expect_symbol(")")?;
-                return Ok(args);
+                return self.parse_arglist();
             }
             Token::Symbol("{") => {
-                self.skip_token();
-                let fields = self.parse_fieldlist()?;
-                self.expect_symbol("}")?;
+                let fields = self.parse_table()?;
                 return Ok(vec![Expression::Table(fields)]);
             }
             Token::String(_) => {
@@ -527,7 +534,7 @@ impl<'a, S: Source> Parser<'a, S> {
 
     fn parse_funcname(&mut self) -> Result<FuncName, ParseError<S::Error>> {
         let mut qname = vec![self.expect_name()?];
-        while self.try_symbol(",")? {
+        while self.try_symbol(".")? {
             qname.push(self.expect_name()?);
         }
         let method = self.try_symbol(":")?;

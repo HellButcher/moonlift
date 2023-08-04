@@ -9,6 +9,14 @@ A pure-rust implementation of *lua* (5.4) with *just-in-time* (JIT) compilation 
 
 This project is in a _very early_ development stage.
 
+## Differences to the original C implementation of Lua 5.4
+
+- All string operations are UTF-8 by default.
+  The original C implementation is encoding-transparent.
+- Unicode-Escape Sequences (`\uXXX`) must produce valid [unicode scalar values](https://www.unicode.org/glossary/#unicode_scalar_value) / code-points.
+  The original C implementation only requires the code-point to be less then 2^31
+- ...
+
 ## License
 
 [license]: #license
