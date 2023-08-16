@@ -14,7 +14,9 @@ on:
       - "**/Cargo.*"
     branches:
       - main
-      
+  # manual execution
+  workflow_dispatch: {}
+    
 permissions: 
   issues: write
   checks: write
