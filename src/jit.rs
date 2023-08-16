@@ -241,7 +241,7 @@ impl Translator<'_> {
                 ref exprs,
             } => {
                 let values: Vec<_> = exprs.iter().map(|e| self.translate_expr(e)).collect();
-                for ((name, attr), val) in vars.iter().zip(values.into_iter()) {
+                for ((name, _attr), val) in vars.iter().zip(values.into_iter()) {
                     let var = self.declare_local(name.as_str());
                     self.builder.def_var(var, val);
                 }
