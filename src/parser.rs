@@ -130,6 +130,7 @@ impl<'a, S: Source> Parser<'a, S> {
                 }
                 Token::Keyword("break") => {
                     self.skip_token();
+                    // Break statement. Semantically equivalent to "goto break"
                     return Ok(Some(Statement::Break));
                 }
                 Token::Keyword("goto") => {

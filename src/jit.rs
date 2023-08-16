@@ -143,7 +143,6 @@ struct Translator<'a> {
 impl Translator<'_> {
     fn translate_statement(&mut self, stmt: &Statement) {
         match stmt {
-            Statement::Empty => {}
             Statement::If {
                 ref ifcases,
                 ref elsecase,

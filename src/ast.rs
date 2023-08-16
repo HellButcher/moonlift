@@ -25,7 +25,6 @@ impl Number {
 
 #[derive(Debug, PartialEq)]
 pub enum Statement {
-    Empty,
     //Expr(Expression),
     FunctCall(Box<FunctionCall>),
     Return(Vec<Expression>),
