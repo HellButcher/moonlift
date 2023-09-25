@@ -11,6 +11,6 @@ rust-version = "1.65"
 [dependencies]
 cranelift = "0.99.1"
 cranelift-jit = "0.99.1"
-cranelift-module = "0.99.1"
+cranelift-module = "0.100.0"
 cranelift-native = "0.99.1"
 thiserror = "1.0.47"
