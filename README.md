@@ -5,6 +5,58 @@
 
 A pure-rust implementation of *lua* (5.4) with *just-in-time* (JIT) compilation using `cranelift`.
 
+---
+
+## Installation Instructions
+
+Follow these steps to install and set up the project:
+
+1. **Install Rust:**
+
+   Run the following command to install Rust using `rustup`:
+
+   ```bash
+   curl https://sh.rustup.rs -sSf | sh
+   ```
+
+   After the installation, configure Rust in your environment. This usually involves updating your shell configuration:
+
+   ```bash
+   # For sh/bash/zsh/ash/dash/pdksh users:
+   . "$HOME/.cargo/env"
+   
+   # For fish users:
+   source "$HOME/.cargo/env.fish"
+   ```
+
+2. **Initialize Submodules:**
+
+   Update and initialize the git submodules:
+
+   ```bash
+   git submodule update --init --recursive
+   ```
+  
+3. **Build the Project:**
+
+   Compile the project using Cargo. You can choose between a debug build or a release build:
+
+   ```bash
+   # Debug build
+   cargo build
+
+   # Release build
+   cargo build --release
+   ```
+
+4. **Run Tests:**
+
+   Execute the tests to verify the installation:
+
+   ```bash
+   cargo test
+   ```
+
 ## WARNING
 
 This project is in a _very early_ development stage.
