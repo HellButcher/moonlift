@@ -34,3 +34,10 @@ dual licensed as above, without any additional terms or conditions.
 
 [LICENSE-MIT]: LICENSE-MIT
 [LICENSE-APACHE]: LICENSE-APACHE
+
+
+## Related topics
+
+* [Lua 5.4 Reference Manual](https://www.lua.org/manual/5.4/)
+* [LuaJIT internals](https://0xbigshaq.github.io/2022/08/22/lua-jit-intro/) (blog series)
+* [SpiderMonkey Internals - Tracing JIT](http://www.devdoc.net/web/developer.mozilla.org/en-US/docs/SpiderMonkey/Internals/Tracing_JIT.html)

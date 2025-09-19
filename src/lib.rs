@@ -5,6 +5,11 @@ use lexer::{Lexer, Position};
 use parser::Parser;
 
 mod ast;
+mod val;
+mod opcode;
+mod vm;
+//mod ffi;
+//mod ffi_impl;
 pub mod jit;
 mod lexer;
 mod parser;

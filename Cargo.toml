@@ -9,8 +9,8 @@ edition = "2021"
 rust-version = "1.65"
 
 [dependencies]
-cranelift = "0.99.1"
-cranelift-jit = "0.99.1"
-cranelift-module = "0.99.1"
-cranelift-native = "0.99.1"
-thiserror = "1.0.47"
+cranelift = "0.103"
+cranelift-jit = "0.103"
+cranelift-module = "0.103"
+cranelift-native = "0.103"
+thiserror = "1.0"
