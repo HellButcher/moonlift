@@ -9,7 +9,11 @@ use crate::{
 pub enum ParseError<E = Infallible> {
     #[error(transparent)]
     LexerError(#[from] LexerError<E>),
-    UnexpectedTokenError(&'static str, &'static str),
+    #[error("Unexpected token: expected {expected}, got {got}")]
+    UnexpectedToken {
+        expected: &'static str,
+        got: &'static str,
+    },
 }
 
 pub struct Parser<'a, S> {
@@ -68,21 +72,30 @@ impl<'a, S: Source> Parser<'a, S> {
     fn expect_keyword(&mut self, kw: &'static str) -> Result<(), ParseError<S::Error>> {
         match self.next_token()? {
             Token::Keyword(k) if k == kw => Ok(()),
-            e => Err(ParseError::UnexpectedTokenError(e.name(), kw)),
+            e => Err(ParseError::UnexpectedToken {
+                got: e.name(),
+                expected: kw,
+            }),
         }
     }
 
     fn expect_symbol(&mut self, sym: &'static str) -> Result<(), ParseError<S::Error>> {
         match self.next_token()? {
             Token::Symbol(s) if s == sym => Ok(()),
-            e => Err(ParseError::UnexpectedTokenError(e.name(), sym)),
+            e => Err(ParseError::UnexpectedToken {
+                got: e.name(),
+                expected: sym,
+            }),
         }
     }
 
     fn expect_name(&mut self) -> Result<String, ParseError<S::Error>> {
         match self.next_token()? {
             Token::Name(name) => Ok(name),
-            e => Err(ParseError::UnexpectedTokenError(e.name(), "<Name>")),
+            e => Err(ParseError::UnexpectedToken {
+                got: e.name(),
+                expected: "<Name>",
+            }),
         }
     }
 
@@ -90,10 +103,10 @@ impl<'a, S: Source> Parser<'a, S> {
         let block = self.parse_block()?;
         match self.next_token()? {
             Token::Eof => Ok(block),
-            t => Err(ParseError::UnexpectedTokenError(
-                t.name(),
-                "EOF (end of file)",
-            )),
+            t => Err(ParseError::UnexpectedToken {
+                got: t.name(),
+                expected: "EOF (end of file)",
+            }),
         }
     }
 
@@ -166,12 +179,17 @@ impl<'a, S: Source> Parser<'a, S> {
                                 }));
                             }
                             t if elsecase.is_none() => {
-                                return Err(ParseError::UnexpectedTokenError(
-                                    t.name(),
-                                    "\"elseif\", \"else\" or \"end\"",
-                                ))
+                                return Err(ParseError::UnexpectedToken {
+                                    got: t.name(),
+                                    expected: "\"elseif\", \"else\" or \"end\"",
+                                })
                             }
-                            t => return Err(ParseError::UnexpectedTokenError(t.name(), "end")),
+                            t => {
+                                return Err(ParseError::UnexpectedToken {
+                                    got: t.name(),
+                                    expected: "end",
+                                })
+                            }
                         }
                     }
                 }
@@ -270,10 +288,10 @@ impl<'a, S: Source> Parser<'a, S> {
                                     self.skip_token();
                                     let e = self.parse_prefixexpr()?;
                                     if !e.is_lvalue() {
-                                        return Err(ParseError::UnexpectedTokenError(
-                                            "Espression / r-value",
-                                            "Variable / l-value",
-                                        ));
+                                        return Err(ParseError::UnexpectedToken {
+                                            got: "Espression / r-value",
+                                            expected: "Variable / l-value",
+                                        });
                                     } else {
                                         vars.push(e);
                                     }
@@ -283,10 +301,10 @@ impl<'a, S: Source> Parser<'a, S> {
                                     break;
                                 }
                                 t => {
-                                    return Err(ParseError::UnexpectedTokenError(
-                                        t.name(),
-                                        "<Assignment>",
-                                    ))
+                                    return Err(ParseError::UnexpectedToken {
+                                        got: t.name(),
+                                        expected: "<Assignment>",
+                                    })
                                 }
                             }
                         }
@@ -300,10 +318,10 @@ impl<'a, S: Source> Parser<'a, S> {
                         return Ok(Some(Statement::Assign { vars, exprs }));
                     }
                     _ => {
-                        return Err(ParseError::UnexpectedTokenError(
-                            "<Expression>",
-                            "<Statement>",
-                        ))
+                        return Err(ParseError::UnexpectedToken {
+                            got: "<Expression>",
+                            expected: "<Statement>",
+                        })
                     }
                 },
                 _ => return Ok(None),
@@ -345,11 +363,15 @@ impl<'a, S: Source> Parser<'a, S> {
                 Expression::Boolean(true)
             }
             Token::Number(_) => {
-                let Some(Token::Number(n)) = self.last_token.take() else { unreachable!() };
+                let Some(Token::Number(n)) = self.last_token.take() else {
+                    unreachable!()
+                };
                 Expression::Number(n)
             }
             Token::String(_) => {
-                let Some(Token::String(s)) = self.last_token.take() else { unreachable!() };
+                let Some(Token::String(s)) = self.last_token.take() else {
+                    unreachable!()
+                };
                 Expression::String(s)
             }
             Token::Symbol("...") => {
@@ -372,10 +394,18 @@ impl<'a, S: Source> Parser<'a, S> {
                     let exp = self.parse_expression_with_precedence(UnaryOp::PRECEDENCE_LEVEL)?;
                     Expression::Unary(op, Box::new(exp))
                 } else {
-                    return Err(ParseError::UnexpectedTokenError(s, "expression"));
+                    return Err(ParseError::UnexpectedToken {
+                        got: s,
+                        expected: "expression",
+                    });
                 }
             }
-            t => return Err(ParseError::UnexpectedTokenError(t.name(), "expression")),
+            t => {
+                return Err(ParseError::UnexpectedToken {
+                    got: t.name(),
+                    expected: "expression",
+                })
+            }
         };
 
         while let Some((s, op, precedence)) = self.try_infix_op(base_precedence)? {
@@ -415,14 +445,16 @@ impl<'a, S: Source> Parser<'a, S> {
                 exp
             }
             Token::Name(_) => {
-                let Some(Token::Name(n)) = self.last_token.take() else { unreachable!() };
+                let Some(Token::Name(n)) = self.last_token.take() else {
+                    unreachable!()
+                };
                 Expression::Var(n)
             }
             t => {
-                return Err(ParseError::UnexpectedTokenError(
-                    t.name(),
-                    "prefix expression",
-                ))
+                return Err(ParseError::UnexpectedToken {
+                    got: t.name(),
+                    expected: "prefix expression",
+                })
             }
         };
         loop {
@@ -526,10 +558,17 @@ impl<'a, S: Source> Parser<'a, S> {
                 return Ok(vec![Expression::Table(fields)]);
             }
             Token::String(_) => {
-                let Some(Token::String(s)) = self.last_token.take() else { unreachable!() };
+                let Some(Token::String(s)) = self.last_token.take() else {
+                    unreachable!()
+                };
                 return Ok(vec![Expression::String(s)]);
             }
-            t => return Err(ParseError::UnexpectedTokenError(t.name(), "arguments")),
+            t => {
+                return Err(ParseError::UnexpectedToken {
+                    got: t.name(),
+                    expected: "arguments",
+                })
+            }
         }
     }
 
@@ -557,7 +596,9 @@ impl<'a, S: Source> Parser<'a, S> {
                     });
                 }
                 Token::Name(_) => {
-                    let Some(Token::Name(n)) = self.last_token.take() else {unreachable!()};
+                    let Some(Token::Name(n)) = self.last_token.take() else {
+                        unreachable!()
+                    };
                     names.push(n);
                     if !self.try_symbol(",")? {
                         return Ok(Params {
