@@ -24,11 +24,14 @@ macro_rules! __mkop {
     (letitem $vm:ident [$n:ident: rbase = $e:expr]) => {};
     (letitem $vm:ident [$n:ident: uv = $e:expr]) => { let $n = $vm.get_uv($e as u16); };
     (letitem $vm:ident [$n:ident: str = $e:expr]) => { let $n = $vm.get_str($e as u16); };
+    (letitem $vm:ident [$n:ident: tab = $e:expr]) => { let $n = $vm.get_tab($e as u16); };
     (letitem $vm:ident [$n:ident: num = $e:expr]) => { let $n = $vm.get_num($e as u16); };
     (letitem $vm:ident [$n:ident: cdata = $e:expr]) => { }; // TODO
     (letitem $vm:ident [$n:ident: lit = $e:expr]) => { let $n = $e as Value; }; // TODO
+    (letitem $vm:ident [$n:ident: lits = $e:expr]) => { let $n = $e as Value; }; // TODO
     (letitem $vm:ident [$n:ident: pri = $e:expr]) => { let $n = $e as Value; }; // TODO
     (letitem $vm:ident [$n:ident: jump = $e:expr]) => { let $n = Jump($e); };
+    (letitem $vm:ident [$n:ident: func = $e:expr]) => { let $n = $vm.get_func($e as u16); };
 
     (postitem $vm:ident [$n:ident: dst = $e:expr]) => { $vm.set_var($e as u16, $n); };
     (postitem $vm:ident [$n:ident: uvdst = $e:expr]) => { $vm.set_uv($e as u16, $n); };
@@ -42,11 +45,13 @@ macro_rules! define_opcodes {
         $($id:ident ($($arg:ident : $mode:ident),*) {$($body:tt)*} ),* $(,)?
     } => {
         #[repr(u8)]
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
         pub enum OpCode {
             $($id),*
         }
 
-        #[repr(u8)]
+        #[repr(u32)]
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
         pub enum Op {
             $(
                 $id (__mkop!(type[$($mode),*])) 
@@ -65,16 +70,36 @@ macro_rules! define_opcodes {
             fn exec(&self, $vm: &mut VM) {
                 match self {
                     $(
-                        Op::$id(args) => {
-                            __mkop!(mapargs args[$($arg: $mode),*] [letitem $vm]);
+                        Op::$id(_args) => {
+                            __mkop!(mapargs _args[$($arg: $mode),*] [letitem $vm]);
                             $($body)*
-                            __mkop!(mapargs args[$($arg: $mode),*] [postitem $vm]);
+                            __mkop!(mapargs _args[$($arg: $mode),*] [postitem $vm]);
                         }
                     ),*
                 }
             }
         }
     };
+}
+
+macro_rules! OP {
+    ($code:ident) => (crate::opcode::Op::$code(crate::opcode::AD{
+        a: 0,
+        d: 0,
+    }));
+    ($code:ident ($d:expr)) => (crate::opcode::Op::$code(crate::opcode::AD{
+        a: 0,
+        d: $d as u16,
+    }));
+    ($code:ident ($a:expr, $d:expr)) => (crate::opcode::Op::$code(crate::opcode::AD{
+        a: $a as u8,
+        d: $d as u16,
+    }));
+    ($code:ident ($a:expr, $b:expr, $c:expr)) => (crate::opcode::Op::$code(crate::opcode::ABC{
+        a: $a as u8,
+        b: $b as u8,
+        c: $c as u8,
+    }));
 }
 
 struct VM {
@@ -86,6 +111,12 @@ impl VM {
         todo!()
     }
     fn get_str(&self, str: u16) -> Value {
+        todo!()
+    }
+    fn get_tab(&self, tab: u16) -> Value {
+        todo!()
+    }
+    fn get_func(&self, tab: u16) -> Value {
         todo!()
     }
     fn get_num(&self, num: u16) -> Value {
@@ -102,23 +133,48 @@ impl VM {
     }
 }
 
-struct ABC{
-    a: u8,
-    b: u8,
-    c: u8,
-}
-struct AD{
-    a: u8,
-    d: u16,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ABC{
+    pub(crate) a: u8,
+    pub(crate) b: u8,
+    pub(crate) c: u8,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct AD{
+    pub(crate) a: u8,
+    pub(crate) d: u16,
+}
+
+/// variable slot number, used as a destination
+#[repr(transparent)]
 struct Dst(u8);
+/// variable slot number
+#[repr(transparent)]
 struct Var(u8);
+/// string constant, negated index into constant table
+#[repr(transparent)]
 struct Str(u16);
+/// number constant, index into constant table
+#[repr(transparent)]
 struct Num(u16);
+/// literal
+#[repr(transparent)]
 struct Lit(u16);
+/// signed literal
+#[repr(transparent)]
+struct LitS(i16);
+/// cdata constant, negated index into constant table
+#[repr(transparent)]
 struct Cdata(u16);
+/// branch target, relative to next instruction, biased with 0x8000
+#[repr(transparent)]
 struct Jump(u16);
+/// function prototype, negated index into constant table
+#[repr(transparent)]
+struct Func(u16);
+/// primitive type (0 = `nil`, 1 = `false`, 2 = `true`)
+#[repr(transparent)]
 struct Pri(u8);
 
 define_opcodes!{
@@ -131,7 +187,7 @@ define_opcodes!{
         }
     },
     // Jump if A ≥ D
-    IdGe(a: var, d: var) {
+    IsGe(a: var, d: var) {
         if !(a >= d) {
             vm.pc += 1;
         }
@@ -245,7 +301,12 @@ define_opcodes!{
       // TODO
       let a = todo!();
     },
+    // Set A bitwise not of D
+    BNot(a: dst, d: var) {
+        let a = !d;
+    },
 
+    /*
     // A = B + C
     AddVN(a: dst, b: var, c: num) {
         let a = b + c;
@@ -287,6 +348,7 @@ define_opcodes!{
     ModNV(a: dst, b: var, c: num) {
       let a = c % b;
     },
+    */
 
     // A = B + C
     AddVV(a: dst, b: var, c: var) {
@@ -304,9 +366,34 @@ define_opcodes!{
     DivVV(a: dst, b: var, c: var) {
       let a = b / c;
     },
+    // A = B // C (integer division)
+    IDivVV(a: dst, b: var, c: var) {
+      let a = b / c;
+    },
     // A = B % C
     ModVV(a: dst, b: var, c: var) {
       let a = b % c;
+    },
+
+    // A = B & C (bit and)
+    BAndVV(a: dst, b: var, c: var) {
+      let a = b & c;
+    },
+    // A = B | C (bit or)
+    BOrVV(a: dst, b: var, c: var) {
+      let a = b & c;
+    },
+    // A = B ~ C (bit or)
+    BXorVV(a: dst, b: var, c: var) {
+      let a = b ^ c;
+    },
+    // A = B << C (shift left)
+    ShLVV(a: dst, b: var, c: var) {
+      let a = b << c;
+    },
+    // A = B >> C (shift right)
+    ShRVV(a: dst, b: var, c: var) {
+      let a = b >> c;
     },
 
     // A = B ^ C
@@ -314,7 +401,7 @@ define_opcodes!{
       let a = b.pow(c);
     },
     // A = B .. ~ .. C
-    Cat(a: dst, b: var, c: var) {
+    Cat(a: dst, b: rbase, c: rbase) {
       // TODO
       let a = todo!();
     },
@@ -332,6 +419,10 @@ define_opcodes!{
     KShort(a: dst, d: lit) {
       let a = d;
     },
+    // Set A to number constant D
+    KNum(a: dst, d: num) {
+      let a = d;
+    },
     // Set A to primitive D
     // switch (D) {
     //     case 0: A = nil;
@@ -340,6 +431,10 @@ define_opcodes!{
     // }
     KPri(a: dst, d: pri) {
       let a = d;
+    },
+    // Set slots A to D to nil
+    KNil(a: base, d: base) {
+      todo!();
     },
 
     // Set A to upvalue D
@@ -366,15 +461,39 @@ define_opcodes!{
     USetP(a: uvdst, d: pri) {
       let a = d;
     },
-    
+    // Close upvalues for slots $\ge$ rbase and jump to target D
+    UClo(a: rbase, d: jump) {
+      // TODO
+      let a = todo!();
+    },
+    // Create new closure from prototype D and store it in A
+    FNew(a: dst, d: func) {
+      // TODO
+      let a = todo!();
+    },
 
     // Set A to new table with size D
     TNew(a: dst, d: lit) {
       // TODO
       let a = todo!();
     },
+    // Set A to duplicated template table D
+    TDup(a: dst, d: tab) {
+      // TODO
+      let a = todo!();
+    },
+    // A = G[D]
+    GGet(a: dst, d: str) {
+      // TODO
+      let a = todo!();
+    },
+    // G[D] = A
+    GSet(a: var, d: str) {
+      // TODO
+      let a = todo!();
+    },
     // A = B[C]
-    TGet(a: dst, b: var, c: var) {
+    TGetV(a: dst, b: var, c: var) {
       // TODO
       let a = todo!();
     },
@@ -389,24 +508,38 @@ define_opcodes!{
       let a = todo!();
     },
     // B[C] = A
-    TSet(a: var, b: var, c: var) {
+    TSetV(a: var, b: var, c: var) {
       // TODO
-        todo!();
+      todo!();
     },
     // B[C] = A
     TSetS(a: var, b: var, c: str) {
       // TODO
-        todo!();
+      todo!();
     },
     // B[C] = A
     TSetB(a: var, b: var, c: lit) {
       // TODO
-        todo!();
+      todo!();
+    },
+    // (A-1)[D], (A-1)[D+1], ... = A, A+1, ...
+    TSetM(a: base, d: num) { 
+      // TODO
+      let a = todo!();
     },
 
-
+    // Call: A, ..., A+B-2 = A(A+1, ..., A+C+MULTRES)
+    CallM(a: base, b: lit, c: lit) { 
+      // TODO
+        todo!();
+    },
     // Call: A, ..., A+B-2 = A(A+1, ..., A+C-1)
     Call(a: base, b: lit, c: lit) {
+      // TODO
+        todo!();
+    },
+    // Tail-Call: `return` A(A+1, ..., A+D+MULTRES)
+    CallMT(a: base, d: lit) { 
       // TODO
         todo!();
     },
@@ -415,8 +548,24 @@ define_opcodes!{
       // TODO
         todo!();
     },
+
+    // Return A, \..., A+D+MULTRES-1
+    RetM(a: base, d: lit) { 
+      // TODO
+        todo!();
+    },
     // Return A, ..., A+D-2
     Ret(a: base, d: lit) {
+      // TODO
+        todo!();
+    },
+    // Return
+    Ret0(a: rbase, d: lit) { 
+      // TODO
+      todo!();
+    },
+    // Return A
+    Ret1(a: rbase, d: lit) { 
       // TODO
         todo!();
     },
@@ -430,8 +579,27 @@ define_opcodes!{
     Jmp(a: rbase, d: jump) {
       // TODO
         todo!();
-    }
+    },
+
+    // Loop/Branch ops (add missing ones as stubs)
+    ForL(a: base, d: jump) { todo!(); },
+    IfForL(a: base, d: jump) { todo!(); },
+    JForL(a: base, d: lit) { todo!(); },
+    IterL(a: base, d: jump) { todo!(); },
+    IIterL(a: base, d: jump) { todo!(); },
+    JIterL(a: base, d: lit) { todo!(); },
+    Loop(a: rbase, d: jump) { todo!(); },
+    ILoop(a: rbase, d: jump) { todo!(); },
+    JLoop(a: rbase, d: lit) { todo!(); },
+
+    // Function header ops (add missing ones as stubs)
+    FuncF(a: rbase) { todo!(); },
+    IFuncF(a: rbase) { todo!(); },
+    JFuncF(a: rbase, d: lit) { todo!(); },
+    FuncV(a: rbase) { todo!(); },
+    IFuncV(a: rbase) { todo!(); },
+    JFuncV(a: rbase, d: lit) { todo!(); },
+    FuncC(a: rbase) { todo!(); },
+    FuncCW(a: rbase) { todo!(); }
 }
-
-
 
