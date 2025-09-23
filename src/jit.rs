@@ -295,43 +295,35 @@ impl Translator<'_> {
                     UnaryOp::Len => todo!(),
                 }
             }
-            Expression::Infix(op, exprs) => {
+            Expression::Infix(lhs, op, rhs) => {
                 // TODO: lazy-eval for`and` & `or`
                 // TODO: left and right assoc.
                 // TODO: integer & float handling
-                let values: Vec<_> = exprs.iter().map(|e| self.translate_expr(e)).collect();
-                let mut values = values.into_iter();
-                let mut e = values.next().unwrap(); // TODO: error
-                while let Some(val) = values.next() {
-                    match op {
-                        InfixOp::Add => e = self.builder.ins().iadd(e, val),
-                        InfixOp::Sub => e = self.builder.ins().isub(e, val),
-                        InfixOp::Mul => e = self.builder.ins().imul(e, val),
-                        InfixOp::Div => e = self.builder.ins().sdiv(e, val),
-                        InfixOp::FloorDiv => e = self.builder.ins().udiv(e, val),
-                        InfixOp::Mod => e = self.builder.ins().srem(e, val),
-                        InfixOp::Less => e = self.builder.ins().icmp(IntCC::SignedLessThan, e, val),
-                        InfixOp::LessEq => {
-                            e = self
-                                .builder
-                                .ins()
-                                .icmp(IntCC::SignedLessThanOrEqual, e, val)
-                        }
-                        InfixOp::Greater => {
-                            e = self.builder.ins().icmp(IntCC::SignedGreaterThan, e, val)
-                        }
-                        InfixOp::GreaterEq => {
-                            e = self
-                                .builder
-                                .ins()
-                                .icmp(IntCC::SignedGreaterThanOrEqual, e, val)
-                        }
-                        InfixOp::Eq => e = self.builder.ins().icmp(IntCC::Equal, e, val),
-                        InfixOp::NotEq => e = self.builder.ins().icmp(IntCC::NotEqual, e, val),
-                        _ => todo!("unsupported operand {op:?}"),
+                let l = self.translate_expr(lhs);
+                let r = self.translate_expr(rhs);
+                match op {
+                    InfixOp::Add => self.builder.ins().iadd(l, r),
+                    InfixOp::Sub => self.builder.ins().isub(l, r),
+                    InfixOp::Mul => self.builder.ins().imul(l, r),
+                    InfixOp::Div => self.builder.ins().sdiv(l, r),
+                    InfixOp::FloorDiv => self.builder.ins().udiv(l, r),
+                    InfixOp::Mod => self.builder.ins().srem(l, r),
+                    InfixOp::Less => self.builder.ins().icmp(IntCC::SignedLessThan, l, r),
+                    InfixOp::LessEq => {
+                        self.builder
+                            .ins()
+                            .icmp(IntCC::SignedLessThanOrEqual, l, r)
                     }
+                    InfixOp::Greater => self.builder.ins().icmp(IntCC::SignedGreaterThan, l, r),
+                    InfixOp::GreaterEq => {
+                        self.builder
+                            .ins()
+                            .icmp(IntCC::SignedGreaterThanOrEqual, l, r)
+                    }
+                    InfixOp::Eq => self.builder.ins().icmp(IntCC::Equal, l, r),
+                    InfixOp::NotEq => self.builder.ins().icmp(IntCC::NotEqual, l, r),
+                    _ => todo!("unsupported operand {op:?}"),
                 }
-                e
             }
             _ => todo!("Unsupported expression {expr:?}"),
         }

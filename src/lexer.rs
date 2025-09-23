@@ -113,7 +113,7 @@ impl<R: io::Read> Source for ReadSource<R> {
         let c = unsafe { *self.buf.get_unchecked(self.buf_pos) };
         self.pos += 1;
         self.buf_pos += 1;
-        return Ok(Some(c));
+        Ok(Some(c))
     }
 
     #[inline]
@@ -263,10 +263,10 @@ impl<S: Source> Lexer<S> {
         };
         match c {
             b'-' => match self.source.read_next()? {
-                Some(b'-') => return self.read_comment(),
+                Some(b'-') => self.read_comment(),
                 _ => {
                     self.source.unwind();
-                    return Ok(Token::Symbol("-"));
+                    Ok(Token::Symbol("-"))
                 }
             },
             b'[' => {
@@ -275,9 +275,9 @@ impl<S: Source> Lexer<S> {
                     //let s = String::from_utf8(std::mem::take(&mut self.value))
                     //    .map_err(|e| LexerError::Utf8Error(e.utf8_error()))?;
                     let s: Box<[u8]> = self.value.as_slice().into();
-                    return Ok(Token::String(s));
+                    Ok(Token::String(s))
                 } else {
-                    return Ok(Token::Symbol("["));
+                    Ok(Token::Symbol("["))
                 }
             }
             b'"' | b'\'' => {
@@ -286,71 +286,71 @@ impl<S: Source> Lexer<S> {
                 //let s = String::from_utf8(std::mem::take(&mut self.value))
                 //    .map_err(|e| LexerError::Utf8Error(e.utf8_error()))?;
                 let s: Box<[u8]> = self.value.as_slice().into();
-                return Ok(Token::String(s));
+                Ok(Token::String(s))
             }
             b':' => {
                 if matches!(self.source.read_next()?, Some(b':')) {
-                    return Ok(Token::Symbol("::"));
+                    Ok(Token::Symbol("::"))
                 } else {
                     self.source.unwind();
-                    return Ok(Token::Symbol(":"));
+                    Ok(Token::Symbol(":"))
                 }
             }
             b'~' => {
                 if matches!(self.source.read_next()?, Some(b'=')) {
-                    return Ok(Token::Symbol("~="));
+                    Ok(Token::Symbol("~="))
                 } else {
                     self.source.unwind();
-                    return Ok(Token::Symbol("~"));
+                    Ok(Token::Symbol("~"))
                 }
             }
             b'/' => {
                 if matches!(self.source.read_next()?, Some(b'/')) {
-                    return Ok(Token::Symbol("//"));
+                    Ok(Token::Symbol("//"))
                 } else {
                     self.source.unwind();
-                    return Ok(Token::Symbol("/"));
+                    Ok(Token::Symbol("/"))
                 }
             }
             b'<' => match self.source.read_next()? {
                 Some(b'<') => {
-                    return Ok(Token::Symbol("<<"));
+                    Ok(Token::Symbol("<<"))
                 }
                 Some(b'=') => {
-                    return Ok(Token::Symbol("<="));
+                    Ok(Token::Symbol("<="))
                 }
                 _ => {
                     self.source.unwind();
-                    return Ok(Token::Symbol("<"));
+                    Ok(Token::Symbol("<"))
                 }
             },
             b'>' => match self.source.read_next()? {
                 Some(b'>') => {
-                    return Ok(Token::Symbol(">>"));
+                    Ok(Token::Symbol(">>"))
                 }
                 Some(b'=') => {
-                    return Ok(Token::Symbol(">="));
+                    Ok(Token::Symbol(">="))
                 }
                 _ => {
                     self.source.unwind();
-                    return Ok(Token::Symbol(">"));
+                    Ok(Token::Symbol(">"))
                 }
             },
             b'=' => {
                 if matches!(self.source.read_next()?, Some(b'=')) {
-                    return Ok(Token::Symbol("=="));
+                    Ok(Token::Symbol("=="))
                 } else {
                     self.source.unwind();
-                    return Ok(Token::Symbol("="));
+                    Ok(Token::Symbol("="))
                 }
             }
             b'.' => match self.source.read_next()? {
                 Some(b'.') => {
                     if matches!(self.source.read_next()?, Some(b'.')) {
-                        return Ok(Token::Symbol("..."));
+                        Ok(Token::Symbol("..."))
                     } else {
                         self.source.unwind();
-                        return Ok(Token::Symbol(".."));
+                        Ok(Token::Symbol(".."))
                     }
                 }
                 Some(c @ (b'0'..=b'9')) => {
@@ -376,24 +376,24 @@ impl<S: Source> Lexer<S> {
                         None => {}
                     }
 
-                    return Ok(Token::Number(Number::Float(f)));
+                    Ok(Token::Number(Number::Float(f)))
                 }
                 _ => {
                     self.source.unwind();
-                    return Ok(Token::Symbol("."));
+                    Ok(Token::Symbol("."))
                 }
             },
             b'+' => {
-                return Ok(Token::Symbol("+"));
+                Ok(Token::Symbol("+"))
             }
             b'*' => {
-                return Ok(Token::Symbol("*"));
+                Ok(Token::Symbol("*"))
             }
             b'%' => {
-                return Ok(Token::Symbol("%"));
+                Ok(Token::Symbol("%"))
             }
             b'^' => {
-                return Ok(Token::Symbol("^"));
+                Ok(Token::Symbol("^"))
             }
             b'#' => {
                 if self.line == 1 && self.source.pos() == 1 {
@@ -402,34 +402,34 @@ impl<S: Source> Lexer<S> {
                     self.read_until_end_of_line()?;
                     return Ok(Token::Comment);
                 }
-                return Ok(Token::Symbol("#"));
+                Ok(Token::Symbol("#"))
             }
             b'&' => {
-                return Ok(Token::Symbol("&"));
+                Ok(Token::Symbol("&"))
             }
             b'|' => {
-                return Ok(Token::Symbol("|"));
+                Ok(Token::Symbol("|"))
             }
             b'(' => {
-                return Ok(Token::Symbol("("));
+                Ok(Token::Symbol("("))
             }
             b')' => {
-                return Ok(Token::Symbol(")"));
+                Ok(Token::Symbol(")"))
             }
             b'{' => {
-                return Ok(Token::Symbol("{"));
+                Ok(Token::Symbol("{"))
             }
             b'}' => {
-                return Ok(Token::Symbol("}"));
+                Ok(Token::Symbol("}"))
             }
             b';' => {
-                return Ok(Token::Symbol(";"));
+                Ok(Token::Symbol(";"))
             }
             b',' => {
-                return Ok(Token::Symbol(","));
+                Ok(Token::Symbol(","))
             }
             b']' => {
-                return Ok(Token::Symbol("]"));
+                Ok(Token::Symbol("]"))
             }
             b'a'..=b'z' | b'A'..=b'Z' | b'_' => {
                 self.value.clear();
@@ -448,11 +448,11 @@ impl<S: Source> Lexer<S> {
                 if let Ok(i) =
                     KEYWORDS.binary_search_by_key(&self.value.as_slice(), |k| k.as_bytes())
                 {
-                    return Ok(Token::Keyword(&KEYWORDS[i]));
+                    return Ok(Token::Keyword(KEYWORDS[i]));
                 }
                 // SAFETY: is UTF-8 [a-zA-Z_0-9]
                 let s = unsafe { String::from_utf8_unchecked(std::mem::take(&mut self.value)) };
-                return Ok(Token::Name(s));
+                Ok(Token::Name(s))
             }
             b'0'..=b'9' => {
                 if c == b'0' && matches!(self.source.read_next()?, Some(b'x' | b'X')) {
@@ -488,7 +488,7 @@ impl<S: Source> Lexer<S> {
                         None => {}
                     }
 
-                    return Ok(Token::Number(Number::Float(f)));
+                    Ok(Token::Number(Number::Float(f)))
                 } else {
                     self.source.unwind();
                     let n = self.read_decimal_integer()?;
@@ -521,7 +521,7 @@ impl<S: Source> Lexer<S> {
                         None => {}
                     }
 
-                    return Ok(Token::Number(Number::Float(f)));
+                    Ok(Token::Number(Number::Float(f)))
                 }
             }
             b' ' | b'\t' | b'\r' | b'\n' => {
@@ -554,9 +554,9 @@ impl<S: Source> Lexer<S> {
                         break;
                     }
                 }
-                return Ok(Token::Whitespace);
+                Ok(Token::Whitespace)
             }
-            _ => return Err(LexerError::UnexpectedCharacter(c as char, "token")),
+            _ => Err(LexerError::UnexpectedCharacter(c as char, "token")),
         }
     }
 
@@ -576,7 +576,7 @@ impl<S: Source> Lexer<S> {
         }
         self.source.unwind();
         self.read_until_end_of_line()?;
-        return Ok(Token::Comment);
+        Ok(Token::Comment)
     }
 
     fn read_until_end_of_line(&mut self) -> Result<(), LexerError<S::Error>> {
@@ -838,7 +838,7 @@ impl<S: Source> Lexer<S> {
     fn read_decimal_integer(&mut self) -> Result<Number, LexerError<S::Error>> {
         let mut result = 0i64;
         while let Some(v) = self.source.read_next()?.and_then(Self::decimal_digit_value) {
-            if let Some(r) = result.checked_mul(10 as i64) {
+            if let Some(r) = result.checked_mul(10_i64) {
                 if let Some(r) = r.checked_add(v as i64) {
                     result = r;
                     continue;

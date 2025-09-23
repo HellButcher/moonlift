@@ -25,8 +25,7 @@ impl Number {
 
 #[derive(Debug, PartialEq)]
 pub enum Statement {
-    //Expr(Expression),
-    FunctCall(Box<FunctionCall>),
+    Expression(Box<Expression>),
     Return(Vec<Expression>),
     Break,
     Assign {
@@ -48,7 +47,7 @@ pub enum Statement {
         ifcases: Vec<(Expression, Block)>,
         elsecase: Block,
     },
-    For {
+    ForNum {
         var: String,
         exprs: Vec<Expression>,
         block: Block,
@@ -60,8 +59,7 @@ pub enum Statement {
     },
     Function {
         name: FuncName,
-        params: Params,
-        body: Block,
+        proto: Proto,
     },
     Local {
         vars: Vec<(String, String)>,
@@ -197,6 +195,10 @@ impl InfixOp {
             Self::Pow => 12,
         }
     }
+
+    pub const fn is_right_associative(self) -> bool {
+        matches!(self, Self::Pow | Self::Concat)
+    }
 }
 
 #[derive(Debug, PartialEq)]
@@ -207,12 +209,12 @@ pub enum Expression {
     Number(Number),
     String(Box<[u8]>),
     Var(String),
-    FunctDef(Params, Block),
+    FunctDef(Proto),
     FunctCall(Box<FunctionCall>),
     Index(Box<Expression>, Box<Expression>),
     Field(Box<Expression>, String),
     Unary(UnaryOp, Box<Expression>),
-    Infix(InfixOp, Vec<Expression>),
+    Infix(Box<Expression>, InfixOp, Box<Expression>),
     Table(Vec<Field>),
 }
 
@@ -248,4 +250,11 @@ pub struct FuncName {
 pub struct Params {
     pub names: Vec<String>,
     pub variadic: bool,
+}
+
+#[derive(Debug, PartialEq)]
+pub struct Proto {
+    pub method: bool,
+    pub params: Params,
+    pub body: Block,
 }

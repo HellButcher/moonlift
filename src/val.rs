@@ -109,7 +109,7 @@ impl Value {
 
     #[inline]
     pub const fn f64(f: f64) -> Self {
-        let i: i64 = unsafe { std::mem::transmute(f) };
+        let i: i64 = unsafe { f64::to_bits(f).cast_signed() };
         assert!(((i >> 47) as u32) < !13);
         Self{ f }
     }
