@@ -134,19 +134,19 @@ impl AstVisitor {
     pub fn leave_block(&mut self) -> ast::Block {
         self.blocks.pop().unwrap()
     }
-    pub fn current_block(&self) -> &ast::Block {
+    fn current_block(&self) -> &ast::Block {
         self.blocks.last().unwrap()
     }
-    pub fn current_block_mut(&mut self) -> &mut ast::Block {
+    fn current_block_mut(&mut self) -> &mut ast::Block {
         self.blocks.last_mut().unwrap()
     }
-    pub fn current_loop_mut(&mut self) -> &mut Loop {
+    fn current_loop_mut(&mut self) -> &mut Loop {
         self.loops.last_mut().unwrap()
     }
-    pub fn push_table_field(&mut self, field: ast::Field) {
+    fn push_table_field(&mut self, field: ast::Field) {
         self.tables.last_mut().expect("not inside table").push(field);
     }
-    pub fn push_stmt(&mut self, stmt: ast::Statement) {
+    fn push_stmt(&mut self, stmt: ast::Statement) {
         self.current_block_mut().push(stmt);
     }
     pub fn last_stmt(&self) -> Option<&ast::Statement> {
@@ -169,11 +169,6 @@ impl ParseVisitor for AstVisitor {
     type Error = Infallible;
     type Expr = ast::Expression;
     type Proto = ast::Proto;
-
-    fn enter_scope(&mut self) {}
-
-    fn leave_scope(&mut self)  {
-    }
 
     fn stmt_label(&mut self, label: String) {
         self.push_stmt(ast::Statement::Label(label));
@@ -231,6 +226,15 @@ impl ParseVisitor for AstVisitor {
         self.push_stmt(stmt);
     }
 
+    fn stmt_do(&mut self) {
+        self.enter_block();
+    }
+
+    fn stmt_enddo(&mut self) {
+        let block = self.leave_block();
+        self.push_stmt(ast::Statement::Do(block));
+    }
+
     fn stmt_locals(&mut self, names: Vec<(String, String)>, exprs: Vec<Self::Expr>) {
         self.push_stmt(ast::Statement::Local {
             vars: names,
@@ -279,11 +283,14 @@ impl ParseVisitor for AstVisitor {
     fn expr_function(&mut self, proto: ast::Proto) -> Self::Expr {
         ast::Expression::FunctDef(proto)
     }
-    fn expr_unary(&mut self, op: ast::UnaryOp, expr: Self::Expr) -> Self::Expr {
+    fn expr_prefix(&mut self, op: ast::UnaryOp, expr: Self::Expr) -> Self::Expr {
         ast::Expression::Unary(op, Box::new(expr))
     }
-    fn expr_infix(&mut self, lhs: Self::Expr, op: ast::InfixOp, rhs: Self::Expr) -> Self::Expr {
-        ast::Expression::Infix(Box::new(lhs), op, Box::new(rhs))
+    fn expr_infix(&mut self, lhs: Self::Expr, _op: ast::InfixOp) -> Self::Expr {
+        lhs
+    }
+    fn expr_postfix(&mut self, infix: Self::Expr, op: ast::InfixOp, rhs: Self::Expr) -> Self::Expr {
+        ast::Expression::Infix(Box::new(infix), op, Box::new(rhs))
     }
     fn expr_var(&mut self, name: String) -> Self::Expr {
         ast::Expression::Var(name)
@@ -294,8 +301,16 @@ impl ParseVisitor for AstVisitor {
     fn expr_field(&mut self, expr: Self::Expr, name: String) -> Self::Expr {
         ast::Expression::Field(Box::new(expr), name)
     }
-    fn expr_call(&mut self, prefix: Self::Expr, method: String, args: Vec<Self::Expr>) -> Self::Expr {
-        ast::Expression::FunctCall(Box::new(ast::FunctionCall { prefix, method, args }))
+    fn expr_self(&mut self, prefix: Self::Expr, method: String) -> Self::Expr {
+        ast::Expression::Field(Box::new(prefix), method)
+    }
+    fn expr_call(&mut self, prefix: Self::Expr, args: Vec<Self::Expr>, is_method: bool) -> Self::Expr {
+        if is_method {
+            if let ast::Expression::Field(boxed_prefix, method) = prefix {
+                return ast::Expression::FunctCall(Box::new(ast::FunctionCall { prefix: *boxed_prefix, method, args }));
+            }
+        }
+        ast::Expression::FunctCall(Box::new(ast::FunctionCall { prefix, args, method: String::new() }))
     }
 
 

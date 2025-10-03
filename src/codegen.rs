@@ -1,580 +1,709 @@
 // use std::ops::Range; // entfernt, da ungenutzt
 
-use crate::{ast::*, codegen_state::{BytecodeGenerator, CodeGenerationError, Constant, ExprValue, Frame, ProgramCounter}, opcode::Op, parser::ParseVisitor};
+use core::panic;
 
-enum U16OrReg{
-    U16(u16),
-    Slot(u8),
-}
+use crate::{
+    ast::*, codegen_state::{
+        BytecodeGenerator, CodeGenerationError, ConstValue, DischargedRegOrJmp, Expr, ExprValue, Frame, JumpList, ProgramCounter, Proto, ProtoGenerator
+    }, opcode::Op, parser::{ParseVisitor, ParseVisitorOutput}
+};
 
 impl BytecodeGenerator {
-
-    /// Fix an expression to return one result.
-    /// If expression is not a multi-ret expression (function call or vararg), it already returns one result, so nothing needs to be done.
-    /// Function calls become `NonReloc` expressions (as its result comes fixed in the base register of the call).
-    /// vararg expressions become `Reloc`` as the opcode allows to puts its results where it wants.
-    pub fn set_one_ret(&mut self, value: ExprValue) -> ExprValue {
-        match value {
-            ExprValue::Call(pc) => {
-                let base = self[pc].set_base_num(2).expect("invalid op");
-                ExprValue::NonReloc(base)
-            },
-            ExprValue::VarArg(pc) => {
-                self[pc].set_base_num(2).expect("invalid op");
-                ExprValue::Reloc(pc)
-            },
-            _ => value,
+    fn assign_lvalue(&mut self, lvalue: Expr, mut rvalue: Expr) {
+        if lvalue.is_void() || rvalue.is_void() || self.dead {
+            return;
         }
-    }
-
-    /// Converts an expression value into a relocatable or non-relocatable form.
-    /// This is analogous to Lua's `luaK_dischargevars`, ensuring that constants,
-    /// locals, upvalues, and indexed accesses are properly loaded or moved into registers.
-    /// Jumps and calls are handled as pending relocations.
-    pub fn discharge_vars(&mut self, value: ExprValue) -> ExprValue {
-        match value {
-            ExprValue::Const(k) => {
-                // Just forward, actual loading happens in discharge_to_reg
-                ExprValue::Const(k)
-            },
-            ExprValue::Local(r) => ExprValue::NonReloc(r),
-            ExprValue::Upval(uv) => {
-                let pc = self.emit(OP![UGet(0, uv)]);
-                ExprValue::Reloc(pc)
+        match lvalue.value {
+            ExprValue::Local(slot) => {
+                self.expr_to_reg(&mut rvalue, slot).unwrap();
+            }
+            ExprValue::Global(key_const) => {
+                let val_slot = self.expr_to_any_reg(&mut rvalue).unwrap();
+                self.emit(OP![GSet(val_slot, key_const)]);
+                self.expr_free(&rvalue.value);
             }
             ExprValue::Idx { table_slot, key_slot } => {
-                let pc = self.emit(OP![TGetV(0, table_slot, key_slot)]);
-                ExprValue::Reloc(pc)
-            }
+                let val_slot = self.expr_to_any_reg(&mut rvalue).unwrap();
+                self.emit(OP![TSetV(val_slot, table_slot, key_slot)]);
+                self.expr_free(&rvalue.value);
+                // TODO: how to free table_slot and key_slot?
+            },
             ExprValue::IdxI { table_slot, key_value } => {
-                let pc = self.emit(OP![TGetB(0, table_slot, key_value)]);
-                ExprValue::Reloc(pc)
+                let val_slot = self.expr_to_any_reg(&mut rvalue).unwrap();
+                self.emit(OP![TSetB(val_slot, table_slot, key_value)]);
+                self.expr_free(&rvalue.value);
+                // TODO: how to free table_slot
             }
             ExprValue::IdxStr { table_slot, key_const } => {
-                let pc = self.emit(OP![TGetS(0, table_slot, key_const)]);
-                ExprValue::Reloc(pc)
+                let val_slot = self.expr_to_any_reg(&mut rvalue).unwrap();
+                self.emit(OP![TSetS(val_slot, table_slot, key_const)]);
+                self.expr_free(&rvalue.value);
+                // TODO: how to free table_slot
             }
-            ExprValue::Call(_) | ExprValue::VarArg(_) => {
-                // make shure only one result is returned
-                self.set_one_ret(value)
+            ExprValue::Upval(uv) => {
+                let val_slot = self.expr_to_any_reg(&mut rvalue).unwrap();
+                self.emit(OP![USetV(uv, val_slot)]);
+                self.expr_free(&rvalue.value);
             }
-            ExprValue::Jmp(jump_list) => {
-                // Jump lists: keep as is for patching
-                ExprValue::Jmp(jump_list)
-            }
-            _ => value,
+            _ => panic!("Invalid lvalue in assignment"),
         }
     }
+}
 
-    /// Ensures the value is loaded into the given register.
-    /// This is analogous to Lua's `discharge2reg`, emitting the correct LOAD/MOVE opcode
-    /// depending on the value type. Jumps are not loaded into registers.
-    pub fn discharge_to_reg(&mut self, value: ExprValue, dest: u8) -> Result<ExprValue, CodeGenerationError> {
-        let value = self.discharge_vars(value);
-        match value {
-            ExprValue::Nil => {
-                self.emit(OP![KPri(dest, 0)]);
-            }
-            ExprValue::Bool(v) => {
-                self.emit(OP![KPri(dest, if v { 2 } else { 1 })]);
-            }
-            ExprValue::ConstFloat(f) => {
-                let k = self.constants.add_float(f)?;
-                self.emit(OP![KNum(dest, k)]);
-            }
-            ExprValue::ConstInt(i) => {
-                if i16::MIN as i64 <= i && i <= i16::MAX as i64 {
-                    self.emit(OP![KShort(dest, i as i16)]);
-                } else {
-                    let k = self.constants.add_integer(i)?;
-                    self.emit(OP![KNum(dest, k)]);
-                }
-            }
-            ExprValue::ConstString(s) => {
-                let k = self.constants.add_string(s)?;
-                self.emit(OP![KStr(dest, k)]);
-            }
-            ExprValue::Const(k) => {
-                let pool = &self.constants;
-                match pool.get(k) {
-                    Some(Constant::Float(_) | Constant::Integer(_)) => {
-                        self.emit(OP![KNum(dest, k)]);
-                    }
-                    Some(crate::codegen_state::Constant::String(_)) => {
-                        self.emit(OP![KStr(dest, k)]);
-                    }
-                    _ => unreachable!(),
-                }
-            }
-            ExprValue::NonReloc(r) if r == dest => {},
-            ExprValue::NonReloc(r) => {
-                self.emit(OP![Mov(dest, r)]);
-            }
-            ExprValue::Reloc(pc) => {
-                self[pc].set_a_dst(dest).expect("invalid op");
-            }
-            ExprValue::Jmp(jump_list) => {
-                // Jumps cannot be loaded into registers, but we keep the jump list for patching
-                return Ok(ExprValue::Jmp(jump_list));
-            },
-            _ => unreachable!(),
-        }
-        Ok(ExprValue::NonReloc(dest))
+impl ParseVisitorOutput for BytecodeGenerator {
+    type Output = Proto;
+
+    fn start(&mut self) -> Result<(), Self::Error> {
+        self.enter_function(false, false, vec![]);
+        Ok(())
     }
-
-    /// Ensures the value is loaded into any register (allocates a temp if needed).
-    /// This is analogous to Lua's `discharge2anyreg`.
-    pub fn discharge_to_any_reg(&mut self, value: ExprValue) -> Result<ExprValue, CodeGenerationError> {
-        match value {
-            ExprValue::NonReloc(_) => Ok(value),
-            _ => {
-                let dest = self.frame.alloc_temp();
-                self.discharge_to_reg(value, dest)
-            }
-        }
-    }
-
-    /// Like `discharge_to_any_reg`, but keeps local variables in their register.
-    pub fn discharge_to_any_reg_keep_locals(&mut self, value: ExprValue) -> Result<ExprValue, CodeGenerationError> {
-        match value {
-            ExprValue::Local(_) => Ok(value),
-            _ => self.discharge_to_any_reg(value),
-        }
-    }
-
-    pub fn go_if_true(&mut self, value: ExprValue) -> ProgramCounter {
-        match value {
-            ExprValue::Nil => ProgramCounter(0),
-            _ => ProgramCounter(0), // Dummy, TODO: Implement logic
-        }
+    fn done(&mut self) -> Result<Self::Output, Self::Error> {
+        Ok(self.leave_function())
     }
 }
 
 impl ParseVisitor for BytecodeGenerator {
-    type Expr = ExprValue;
+    type Expr = Expr;
     type Error = CodeGenerationError;
     type Proto = Proto;
-    
+
     fn enter_scope(&mut self) {
-        todo!()
     }
-    
+
     fn leave_scope(&mut self) {
-        todo!()
     }
-    
+
+    fn enter_expr(&mut self) {
+    }
+
+    fn leave_expr(&mut self) {
+    }
+
     fn expr_number(&mut self, n: Number) -> Self::Expr {
+        if self.dead {
+            return Expr::Void;
+        }
         match n {
-            Number::Integer(i) => Self::Expr::ConstInt(i),
-            Number::Float(f) => Self::Expr::ConstFloat(f),
+            Number::Integer(i) => Expr::new(ExprValue::Int(i)),
+            Number::Float(f) => Expr::new(ExprValue::Float(f)),
         }
     }
-    
+
     fn expr_string(&mut self, s: Box<[u8]>) -> Self::Expr {
-        Self::Expr::ConstString(s)
+        if self.dead {
+            return Expr::Void;
+        }
+        Expr::new(ExprValue::Str(s))
     }
-    
+
     fn expr_boolean(&mut self, b: bool) -> Self::Expr {
-        Self::Expr::Bool(b)
+        if self.dead {
+            return Expr::Void;
+        }
+        Expr::new(ExprValue::Bool(b))
     }
-    
+
     fn expr_nil(&mut self) -> Self::Expr {
-        Self::Expr::Nil
+        if self.dead {
+            return Expr::Void;
+        }
+        Expr::new(ExprValue::Nil)
     }
-    
+
     fn expr_ellipsis(&mut self) -> Self::Expr {
-        todo!()
+        if self.dead {
+            return Expr::Void;
+        }
+        // Vararg expression - emit an instruction to get varargs
+        let pc = self.emit(OP![VArg(0, 0, 0)]); // Will be fixed later
+        Expr::new(ExprValue::VarArg(pc))
     }
-    
+
     fn expr_function(&mut self, proto: Self::Proto) -> Self::Expr {
-        todo!()
-    }
-    
-    fn expr_unary(&mut self, op: UnaryOp, expr: Self::Expr) -> Self::Expr {
-        todo!()
-    }
-    
-    fn expr_infix(&mut self, lhs: Self::Expr, op: InfixOp, rhs: Self::Expr) -> Self::Expr {
-        todo!()
-    }
-    
-    fn expr_var(&mut self, name: String) -> Self::Expr {
-        todo!()
-    }
-    
-    fn expr_index(&mut self, expr: Self::Expr, index: Self::Expr) -> Self::Expr {
-        todo!()
-    }
-    
-    fn expr_field(&mut self, expr: Self::Expr, name: String) -> Self::Expr {
-        todo!()
-    }
-    
-    fn expr_call(&mut self, prefix: Self::Expr, method: String, args: Vec<Self::Expr>) -> Self::Expr {
-        todo!()
-    }
-    
-    fn expr_table_begin(&mut self) {
-        todo!()
-    }
-    
-    fn expr_table_field_index(&mut self, key: Self::Expr, value: Self::Expr) {
-        todo!()
-    }
-    
-    fn expr_table_field_named(&mut self, name: String, value: Self::Expr) {
-        todo!()
-    }
-    
-    fn expr_table_field_exp(&mut self, expr: Self::Expr) {
-        todo!()
-    }
-    
-    fn expr_table_end(&mut self) -> Self::Expr {
-        todo!()
-    }
-    
-    fn stmt_label(&mut self, label: String) {
-        todo!()
-    }
-    
-    fn stmt_goto(&mut self, label: String) {
-        todo!()
-    }
-    
-    fn stmt_if(&mut self, condition: Self::Expr) {
-        todo!()
-    }
-    
-    fn stmt_else(&mut self) {
-        todo!()
-    }
-    
-    fn stmt_endif(&mut self) {
-        todo!()
-    }
-    
-    fn stmt_loop(&mut self) {
-        todo!()
-    }
-    
-    fn stmt_loop_while(&mut self, condition: Self::Expr) {
-        todo!()
-    }
-    
-    fn stmt_loop_repeat_until(&mut self, condition: Self::Expr) {
-        todo!()
-    }
-    
-    fn stmt_loop_for(&mut self, var: String, exprs: Vec<Self::Expr>) {
-        todo!()
-    }
-    
-    fn stmt_loop_foreach(&mut self, vars: Vec<String>, exprs: Vec<Self::Expr>) {
-        todo!()
-    }
-    
-    fn stmt_endloop(&mut self) {
-        todo!()
-    }
-    
-    fn stmt_locals(&mut self, names: Vec<(String,String)>, exprs: Vec<Self::Expr>) {
-        todo!()
-    }
-    
-    fn stmt_return(&mut self, exprs: Vec<Self::Expr>) {
-        todo!()
-    }
-    
-    fn stmt_function(&mut self, name: FuncName, proto: Self::Proto) {
-        todo!()
-    }
-    
-    fn stmt_local_function(&mut self, name: String, proto: Self::Proto) {
-        todo!()
-    }
-    
-    fn stmt_assignment(&mut self, vars: Vec<Self::Expr>, exprs: Vec<Self::Expr>) {
-        todo!()
-    }
-    
-    fn stmt_expression(&mut self, call: Self::Expr) {
-        todo!()
-    }
-
-    fn enter_function(&mut self, is_method: bool, is_variadic: bool, args: Vec<String>) {
-        todo!()
-    }
-
-    fn leave_function(&mut self) -> Self::Proto{
-        todo!()
-    }
-}
-
-/// Erzeugt Bytecode aus dem AST.
-pub fn generate_bytecode(block: &Block) -> Vec<Op> {
-    let mut code = Vec::new();
-    let mut frame = Frame::new();
-    compile_block(block, &mut code, &mut frame);
-    code
-}
-
-fn compile_block(block: &Block, code: &mut Vec<Op>, frame: &mut Frame) {
-    for stmt in block {
-        compile_stmt(stmt, code, frame);
-    }
-}
-
-fn compile_stmt(stmt: &Statement, code: &mut Vec<Op>, frame: &mut Frame) {
-    match stmt {
-        Statement::Assign { vars, exprs } => {
-            for (var, expr) in vars.iter().zip(exprs.iter()) {
-                let dst_slot = match var {
-                    Expression::Var(name) => frame.alloc(name),
-                    _ => frame.alloc_temp(),
-                };
-                compile_expr(expr, code, frame, dst_slot);
-                // TODO: set field or index
-            }
+        if self.dead {
+            return Expr::Void;
         }
-        Statement::Return(exprs) => {
-            // Rückgabe aller Werte als ein RET
-            let ret_slots = frame.alloc_temps(exprs.len() as u8);
-            let dest_start = ret_slots.start;
-            for (expr, dest) in exprs.iter().zip(ret_slots) {
-                compile_expr(expr, code, frame, dest);
+        // For now, just return a placeholder - full function compilation would be complex
+        // In a real implementation, we'd need to compile the proto into a codegen_state::Proto
+        let _ = proto; // Silence warning
+        let pc = self.emit(OP![FNew(0, 0)]); // Placeholder function index
+        Expr::Reloc(pc)
+    }
+
+    fn expr_prefix(&mut self, op: UnaryOp, mut expr: Self::Expr) -> Self::Expr {
+        if expr.is_void() || self.dead {
+            return Expr::Void;
+        }
+        if let Some(c) = expr.value.const_eval_unary_op(op) {
+            debug_assert!(!expr.has_jumps());
+            return Expr::new(c.as_expr_value());
+        }
+        let instr = match op {
+            UnaryOp::Not => {
+                // swap True/False jump lists of Expr
+                std::mem::swap(&mut expr.jump_false, &mut expr.jump_true);
+                // TODO: remove values from jump-list conditions
+                match self.discharge_to_any_reg_mut(&mut expr.value).unwrap() {
+                    DischargedRegOrJmp::Reg(src_reg) => {
+                        self.expr_free(&expr.value);
+                        // Emit NOT instruction
+                        OP![Not(0, src_reg)]
+                    }
+                    DischargedRegOrJmp::Jmp(pc) => {
+                        // negate the jump condition
+                        if self.negate_jmp_ctrl(pc) {
+                            return expr;
+                        } else {
+                            panic!("Failed to negate non-conditional jump condition");
+                        }
+                    }
+                }
+            },
+            UnaryOp::BitNot => {
+                let src_reg = self.expr_to_any_reg(&mut expr).unwrap();
+                self.expr_free(&expr.value);
+                OP![BNot(0, src_reg)]
+            },
+            UnaryOp::Minus => {
+                let src_reg = self.expr_to_any_reg(&mut expr).unwrap();
+                self.expr_free(&expr.value);
+                OP![UNM(0, src_reg)]
+            },
+            UnaryOp::Len => {
+                let src_reg = self.expr_to_any_reg(&mut expr).unwrap();
+                self.expr_free(&expr.value);
+                OP![Len(0, src_reg)]
+            },
+        };
+        debug_assert!(!expr.has_jumps()); // TODO: is this correct here?
+        let pc = self.emit(instr);
+        expr.value = ExprValue::Reloc(pc);
+        expr
+    }
+
+    fn expr_infix(&mut self, mut lhs: Self::Expr, op: InfixOp) -> Self::Expr {
+        if lhs.is_void() || self.dead {
+            return Expr::Void;
+        }
+        match op {
+            InfixOp::And => {
+                if let ExprValue::Const(c) = &lhs.value {
+                    if c.is_falsy() {
+                        self.dead = true;
+                    }
+                    return lhs; // evaluate rhs
+                }
+                self.go_if_true(&mut lhs);
+                lhs
             }
-            if exprs.is_empty() {
-                code.push(OP![Ret0]);
-            } else if exprs.len() == 1 {
-                code.push(OP![Ret1(dest_start)]);
+            InfixOp::Or => {
+                if let ExprValue::Const(c) = &lhs.value {
+                    if c.is_truthy() {
+                        self.dead = true;
+                    }
+                    return lhs;
+                }
+                self.go_if_false(&mut lhs);
+                lhs
+            }
+            InfixOp::Concat => {
+                // ensure operand is on stack
+                self.expr_to_next_reg(&mut lhs).unwrap();
+                lhs
+            },
+            _ => lhs,
+        }
+    }
+
+    fn expr_postfix(&mut self, mut lhs: Self::Expr, op: InfixOp, mut rhs: Self::Expr) -> Self::Expr {
+        // Handle short-circuiting constant logical operators first
+        if lhs.is_void() {
+            return rhs;
+        }
+        if rhs.is_void() {
+            debug_assert!(self.dead);
+            self.dead = false;
+            return lhs;
+        }
+        if self.dead {
+            return Expr::Void;
+        }
+
+        // Constant folding for other infix operations
+        if let Some(r) = ExprValue::const_eval_infix_op(op, &lhs.value, &rhs.value) {
+            debug_assert!(!lhs.has_jumps() && !rhs.has_jumps()); // TODO: is this correct here?
+            return Expr::new(r.as_expr_value());
+        }
+
+        // Handle short-circuiting non-const logical operators first
+        match op {
+            InfixOp::And => {
+                debug_assert!(!lhs.jump_true.has_jumps());
+                self.concat_jump_list(&mut rhs.jump_false, lhs.jump_false);
+                return rhs;
+            },
+            InfixOp::Or => {
+                debug_assert!(!lhs.jump_false.has_jumps());
+                self.concat_jump_list(&mut rhs.jump_true, lhs.jump_true);
+                return rhs;
+            },
+            _ => {},
+        }
+
+
+        // Special handling for CONCAT
+        if op == InfixOp::Concat {
+            // Ensure lhs is in the next register
+            let ExprValue::NonReloc(lhs_reg) = lhs.value else {
+                panic!("Expected lhs to be in next register");
+            };
+            // Ensure rhs is in the next register
+            let rhs_reg = self.expr_to_next_reg(&mut rhs).unwrap();
+            self.expr_free2(&lhs.value, &rhs.value);
+            if let Some(Op::Cat(args)) = self.bytecode.last_mut() {
+                // Extend existing CONCAT instruction
+                debug_assert_eq!(lhs_reg + 1, args.b);
+                args.b = lhs_reg;
+                return rhs;
             } else {
-                code.push(OP![Ret(dest_start, exprs.len())]);
+                let pc = self.emit(OP![Cat(0, lhs_reg, rhs_reg)]); // concat two values
+                return Expr::Reloc(pc);
             }
         }
-        Statement::Break => {
-            // Beispiel: Break als Sprung
-            code.push(OP![Jmp(0, 0)]); // TODO: Ziel berechnen
+
+        // TODO: handle constant arguments with specialized opcodes
+        // This may require to swap operands for commutative operations
+
+        let lhs_reg = self.expr_to_any_reg(&mut lhs).unwrap();
+        let rhs_reg = self.expr_to_any_reg(&mut rhs).unwrap();
+
+        self.expr_free2(&lhs.value, &rhs.value);
+
+        match op {
+            // Comparison operators generate conditional jumps
+            InfixOp::Less => self.emit(OP![IsLt(lhs_reg, rhs_reg)]),
+            InfixOp::Greater => self.emit(OP![IsGt(lhs_reg, rhs_reg)]),
+            InfixOp::LessEq => self.emit(OP![IsLe(lhs_reg, rhs_reg)]),
+            InfixOp::GreaterEq => self.emit(OP![IsGe(lhs_reg, rhs_reg)]),
+            // TODO: use specialized opcodes for constants when possible
+            InfixOp::Eq => self.emit(OP![IsEqV(lhs_reg, rhs_reg)]),
+            InfixOp::NotEq => self.emit(OP![IsNeV(lhs_reg, rhs_reg)]),
+
+            _ => {
+                let pc = match op {
+                    // TODO: use specialized opcodes for constants when possible
+                    InfixOp::Add => self.emit(OP![AddVV(0, lhs_reg, rhs_reg)]),
+                    InfixOp::Sub => self.emit(OP![SubVV(0, lhs_reg, rhs_reg)]),
+                    InfixOp::Mul => self.emit(OP![MulVV(0, lhs_reg, rhs_reg)]),
+                    InfixOp::Div => self.emit(OP![DivVV(0, lhs_reg, rhs_reg)]),
+                    InfixOp::FloorDiv => self.emit(OP![IDivVV(0, lhs_reg, rhs_reg)]),
+                    InfixOp::Mod => self.emit(OP![ModVV(0, lhs_reg, rhs_reg)]),
+
+                    InfixOp::Pow => self.emit(OP![Pow(0, lhs_reg, rhs_reg)]),
+                    InfixOp::BitAnd => self.emit(OP![BAndVV(0, lhs_reg, rhs_reg)]),
+                    InfixOp::BitOr => self.emit(OP![BOrVV(0, lhs_reg, rhs_reg)]),
+                    InfixOp::BitXor => self.emit(OP![BXorVV(0, lhs_reg, rhs_reg)]),
+                    InfixOp::ShiftL => self.emit(OP![ShLVV(0, lhs_reg, rhs_reg)]),
+                    InfixOp::ShiftR => self.emit(OP![ShRVV(0, lhs_reg, rhs_reg)]),
+                    InfixOp::Concat => self.emit(OP![Cat(0, lhs_reg, rhs_reg)]),
+
+                    _ => unreachable!(),
+                };
+                return Expr::Reloc(pc);
+            }
+        };
+        let cmp_pc = self.emit_jmp_placeholder();
+        Expr::new(ExprValue::Jmp(cmp_pc))
+    }
+
+    fn expr_var(&mut self, name: String) -> Self::Expr {
+        if self.dead {
+            return Expr::Void;
         }
-        Statement::If { ifcases, elsecase } => {
-            // Beispiel: Nur erster If-Case
-            if let Some((cond, block)) = ifcases.first() {
-                let cond_slot = frame.alloc_temp();
-                compile_expr(cond, code, frame, cond_slot);
-                code.push(OP![IsF(cond_slot)]);
-                let jump_pos = code.len();
-                code.push(OP![Jmp]); // Placeholder for jump
-                for stmt in block {
-                    compile_stmt(stmt, code, frame);
+        if let Some(slot) = self.frame.get(&name) {
+            // it's a local variable
+            Expr::new(ExprValue::Local(slot))
+        } else if let Some(uv_idx) = self.upvalues.iter().position(|uv| uv == &name) {
+            // it's an upvalue
+            Expr::new(ExprValue::Upval(uv_idx as u8))
+        } else {
+            // It's a global variable
+            let key_const = self
+                .constants
+                .add_string(name.into_bytes().into_boxed_slice())
+                .unwrap();
+            Expr::new(ExprValue::Global(key_const))
+        }
+    }
+
+    fn expr_index(&mut self, mut expr: Self::Expr, mut index: Self::Expr) -> Self::Expr {
+        if expr.is_void() || index.is_void() || self.dead {
+            return Expr::Void;
+        }
+        let table_slot = self.expr_to_any_reg(&mut expr).unwrap();
+        // TODO: how to free table_slot?
+
+        // Check if index is a constant that can be optimized
+        match &index.value {
+            ExprValue::Const(ConstValue::Int(i)) if *i >= 0 && *i <= 255 => Expr::new(ExprValue::IdxI {
+                table_slot,
+                key_value: *i as u8,
+            }),
+            ExprValue::Const(ConstValue::Str(_)) => {
+                let ExprValue::Const(ConstValue::Str(s)) = index.take() else {
+                    unreachable!()
+                };
+                let key_const = self.constants.add_string(s).unwrap();
+                if key_const <= 255 {
+                    Expr::new(ExprValue::IdxStr {
+                        table_slot,
+                        key_const: key_const as u8,
+                    })
+                } else {
+                    // Too many constants, fall back to normal indexing
+                    let key_slot = self.frame.alloc_temp();
+                    self.emit(OP![KStr(key_slot, key_const)]);
+                    // TODO: how to free key_slot?
+                    Expr::new(ExprValue::Idx {
+                        table_slot,
+                        key_slot,
+                    })
                 }
-                let end_offset = code.len() - jump_pos;
-                code[jump_pos] = OP![Jmp(end_offset)];
             }
-            // TODO: elsecase und weitere Fälle
-        }
-        Statement::While { cond, block } => {
-            let cond_pos = code.len();
-            let cond_slot = frame.alloc_temp();
-            compile_expr(cond, code, frame, cond_slot);
-            code.push(OP![IsF(cond_slot)]);
-            let jump_cond_pos = code.len();
-            code.push(OP![Jmp]); // Placeholder for jump
-
-            for stmt in block {
-                compile_stmt(stmt, code, frame);
+            _ => {
+                let key_slot = self.expr_to_any_reg(&mut index).unwrap();
+                // TODO: how to free key_slot?
+                Expr::new(ExprValue::Idx {
+                    table_slot,
+                    key_slot,
+                })
             }
-
-            // loop back to beginning
-            let loop_offset = cond_pos as isize - code.len() as isize;
-            code.push(OP![Jmp(loop_offset)]);
-
-            // continue here if condition is false
-            let jump_cond_offset = code.len() - jump_cond_pos;
-            code[jump_cond_pos] = OP![Jmp(jump_cond_offset)];
         }
-        Statement::Do(block) => {
-            compile_block(block, code, frame);
+    }
+
+    fn expr_field(&mut self, mut expr: Self::Expr, name: String) -> Self::Expr {
+        if expr.is_void() || self.dead {
+            return Expr::Void;
         }
-        // ...weitere Statement-Typen...
-        _ => {}
+        let table_slot = self.expr_to_any_reg(&mut expr).unwrap();
+        // TODO: how to free table_slot?
+
+        // Field access is always string indexing
+        let key_const = self
+            .constants
+            .add_string(name.into_bytes().into_boxed_slice())
+            .unwrap();
+        if key_const <= 255 {
+            Expr::new(ExprValue::IdxStr {
+                table_slot,
+                key_const: key_const as u8,
+            })
+        } else {
+            // Too many constants, fall back to normal indexing
+            let key_slot = self.frame.alloc_temp();
+            self.emit(OP![KStr(key_slot, key_const)]);
+            // TODO: how to free key_slot?
+            Expr::new(ExprValue::Idx {
+                table_slot,
+                key_slot,
+            })
+        }
+    }
+
+    fn expr_self(&mut self, mut prefix: Self::Expr, method: String) -> Self::Expr {
+        if prefix.is_void() || self.dead {
+            return Expr::Void;
+        }
+        // Method call: obj:method(...)
+        let table_slot = self.expr_to_any_reg(&mut prefix).unwrap();
+        // TODO: how to free table_slot?
+        let key_const = self
+            .constants
+            .add_string(method.into_bytes().into_boxed_slice())
+            .unwrap();
+        if key_const <= 255 {
+            Expr::new(ExprValue::IdxStr {
+                table_slot,
+                key_const: key_const as u8,
+            })
+        } else {
+            // Too many constants, fall back to normal indexing
+            let key_slot = self.frame.alloc_temp();
+            self.emit(OP![KStr(key_slot, key_const)]);
+            // TODO: how to free key_slot?
+            Expr::new(ExprValue::Idx {
+                table_slot,
+                key_slot,
+            })
+        }
+    }
+
+    fn expr_call(
+        &mut self,
+        mut prefix: Self::Expr,
+        mut args: Vec<Self::Expr>,
+        _is_method: bool,
+    ) -> Self::Expr {
+        if prefix.is_void() || self.dead {
+            return Expr::Void;
+        }
+        // Get the function to call
+        self.discharge_vars_mut(&mut prefix.value);
+
+        // Allocate slots for arguments
+        let num_args = args.len() as u8;
+        let regs = self.frame.alloc_temps(num_args + 1); // +1 for function itself
+        let func_slot = regs.start;
+        let first_arg = func_slot + 1;
+
+        self.expr_to_reg(&mut prefix, func_slot).unwrap();
+
+        // Load arguments into consecutive slots
+        for (i, arg) in args.iter_mut().enumerate() {
+            let arg_slot = first_arg + i as u8;
+            self.expr_to_reg(arg, arg_slot).unwrap();
+        }
+
+        // Emit call instruction
+        let pc = self.emit(OP![Call(func_slot, num_args + 1, 0)]); // +1 for function itself
+
+        // TODO: free
+
+        Expr::new(ExprValue::Call(pc))
+    }
+
+    fn expr_table_begin(&mut self) {
+        if self.dead {
+            return;
+        }
+        // TODO: table creation needs refactoring
+
+        // Create a new table and allocate a slot for it
+        let table_slot = self.frame.alloc_temp();
+        self.emit(OP![TNew(table_slot, 0)]); // Empty table for now
+                                             // We would need to track this table slot somehow, for now simplified
+    }
+
+    fn expr_table_field_index(&mut self, _key: Self::Expr, _value: Self::Expr) {
+        if self.dead {
+            return;
+        }
+        // For proper implementation, we'd need to track the current table being built
+        // For now, just a placeholder
+    }
+
+    fn expr_table_field_named(&mut self, _name: String, _value: Self::Expr) {
+        if self.dead {
+            return;
+        }
+        // For proper implementation, we'd need to track the current table being built
+        // For now, just a placeholder
+    }
+
+    fn expr_table_field_exp(&mut self, _expr: Self::Expr) {
+        if self.dead {
+            return;
+        }
+        // For proper implementation, we'd need to track the current table being built
+        // For now, just a placeholder
+    }
+
+    fn expr_table_end(&mut self) -> Self::Expr {
+        if self.dead {
+            return Expr::Void;
+        }
+        // Return a placeholder table
+        // This is simplified - a proper implementation would track the table construction
+        let pc = self.emit(OP![TNew(0, 0)]); // Empty table
+        Expr::Reloc(pc)
+    }
+
+    fn stmt_label(&mut self, label: String) {
+        // TODO: dead?
+        self.dead = false;
+        todo!()
+    }
+
+    fn stmt_goto(&mut self, label: String) {
+        if self.dead {
+            return;
+        }
+        todo!()
+    }
+
+    fn stmt_if(&mut self, mut condition: Self::Expr) {
+        if self.dead {
+            return;
+        }
+        // TODO: handle optimized case: `if x then break`
+        let else_jump = self.go_if_true(&mut condition);
+        self.ifjumps.push(else_jump);
+    }
+
+    fn stmt_else(&mut self) {
+        if self.dead {
+            return;
+        }
+        let jump_end = JumpList(self.emit_jmp_placeholder());
+        let if_expr_jumps = self.ifjumps.pop().expect("Not inside if");
+        self.ifjumps.push(jump_end);
+        self.patch_jmp_list_here(if_expr_jumps);
+    }
+
+    fn stmt_endif(&mut self) {
+        if self.dead {
+            return;
+        }
+        let jump_end = self.ifjumps.pop().expect("not inside if");
+        self.patch_jmp_list_here(jump_end);
+    }
+
+    fn stmt_loop(&mut self) {
+        if self.dead {
+            return;
+        }
+        let pc = self.pc();
+        self.loops.push((pc, JumpList::NO_JUMP));
+    }
+
+    fn stmt_loop_while(&mut self, mut condition: Self::Expr) {
+        if self.dead {
+            return;
+        }
+        let end_jump = self.go_if_true(&mut condition);
+        let (_loop_start, mut end_jumps) = *self.loops.last().expect("not inside loop");
+        self.concat_jump_list(&mut end_jumps, end_jump);
+        self.loops.last_mut().unwrap().1 = end_jumps;
+    }
+
+    fn stmt_loop_repeat_until(&mut self, mut condition: Self::Expr) {
+        if self.dead {
+            return;
+        }
+        let (loop_start, end_jumps) = *self.loops.last().expect("not inside loop");
+        debug_assert!(!end_jumps.has_jumps());
+        let continue_jump = self.go_if_false(&mut condition);
+        self.patch_jmp_list(continue_jump, loop_start);
+    }
+
+    fn stmt_loop_for(&mut self, var: String, exprs: Vec<Self::Expr>) {
+        if self.dead {
+            return;
+        }
+        todo!()
+    }
+
+    fn stmt_loop_foreach(&mut self, vars: Vec<String>, exprs: Vec<Self::Expr>) {
+        if self.dead {
+            return;
+        }
+        todo!()
+    }
+
+    fn stmt_endloop(&mut self) {
+        if self.dead {
+            return;
+        }
+        let (_loop_start, end_jumps) = self.loops.pop().expect("not inside loop");
+        self.patch_jmp_list_here(end_jumps);
+    }
+
+    fn stmt_do(&mut self) {
+        self.enter_scope();
+    }
+
+    fn stmt_enddo(&mut self) {
+        self.leave_scope();
+    }
+
+    fn stmt_locals(&mut self, names: Vec<(String, String)>, exprs: Vec<Self::Expr>) {
+        if self.dead {
+            return;
+        }
+        let mut vars = Vec::with_capacity(names.len());
+        for (name, _attrib) in names {
+            // TODO: attributes
+            vars.push(Expr::new(ExprValue::Local(self.frame.alloc(name))));
+        }
+        self.stmt_assignment(vars, exprs);
+    }
+
+    fn stmt_return(&mut self, mut exprs: Vec<Self::Expr>) {
+        if self.dead {
+            return;
+        }
+        if exprs.is_empty() {
+            self.emit(OP![Ret0]);
+        } else if exprs.len() == 1 {
+            let mut expr = exprs.pop().unwrap();
+            let reg = self.expr_to_any_reg(&mut expr).unwrap();
+            self.emit(OP![Ret1(reg)]);
+            self.frame.free(reg);
+        } else {
+            let num_rets = exprs.len() as u8;
+            let regs = self.frame.alloc_temps(num_rets);
+            let first_reg = regs.start;
+            for (i, expr) in exprs.iter_mut().enumerate() {
+                let reg = first_reg + i as u8;
+                self.expr_to_reg(expr, reg).unwrap();
+            }
+            self.emit(OP![Ret(first_reg, num_rets)]);
+            self.frame.free_range(regs);
+        }
+        self.dead = true; // TODO: reset dead back to false after block
+    }
+
+    fn stmt_function(&mut self, mut name: FuncName, proto: Self::Proto) {
+        if self.dead {
+            return;
+        }
+        let mut drain = name.qname.drain(..);
+        let mut var = self.expr_var(drain.next().unwrap());
+        for part in drain {
+            var = self.expr_field(var, part);
+        }
+        let func = self.expr_function(proto);
+        self.stmt_assignment(vec![var], vec![func]);
+    }
+
+    fn stmt_local_function(&mut self, name: String, proto: Self::Proto) {
+        if self.dead {
+            return;
+        }
+        let var = self.frame.alloc(name);
+        let mut func = self.expr_function(proto);
+        self.expr_to_reg(&mut func, var).unwrap();
+    }
+
+    fn stmt_assignment(&mut self, vars: Vec<Self::Expr>, exprs: Vec<Self::Expr>) {
+        if self.dead {
+            return;
+        }
+        if vars.len() == exprs.len() {
+            for (var, expr) in vars.into_iter().zip(exprs.into_iter()) {
+                self.assign_lvalue(var, expr);
+            }
+        } else if exprs.len() == 1 {
+            // TODO: unpack variadic
+            todo!()
+        } else if !exprs.is_empty() {
+            panic!("Mismatched number of local variables and expressions");
+        }
+    }
+
+    fn stmt_expression(&mut self, mut call: Self::Expr) {
+        if self.dead {
+            return;
+        }
+        self.expr_to_any_reg(&mut call).unwrap();
+        self.expr_free(&call.value);
+    }
+
+    fn enter_function(&mut self, is_method: bool, is_vararg: bool, args: Vec<String>) {
+        self.protos.push(ProtoGenerator::new(is_vararg, args));
+    }
+
+    fn leave_function(&mut self) -> Self::Proto {
+        self.protos.pop().expect("not in a function").into_proto()
     }
 }
-
-fn compile_expr(expr: &Expression, code: &mut Vec<Op>, frame: &mut Frame, dst: u8) -> u8 {
-    match expr {
-        Expression::Number(n) => {
-            // TODO: Konstantenpool für Zahlen
-            match n {
-                Number::Integer(i) => code.push(OP![KShort(dst, *i)]),
-                Number::Float(f) => code.push(OP![KNum(dst, *f)]),
-            }
-            dst
-        }
-        Expression::Boolean(b) => {
-            let pri = if *b { 2 } else { 1 };
-            code.push(OP![KPri(dst, pri)]);
-            dst
-        }
-        Expression::String(_s) => {
-            // TODO: Konstantenpool für Strings
-            code.push(OP![KStr(dst, dst)]);
-            dst
-        }
-        Expression::Var(name) => {
-            let src = frame.get(name).unwrap_or_else(|| frame.alloc(name));
-            code.push(OP![Mov(dst, src)]);
-            dst
-        }
-        Expression::Infix(lhs, op, rhs) => {
-            let left = compile_expr(lhs, code, frame, dst);
-            match op {
-                InfixOp::And => {
-                    code.push(OP![IsFC(dst, dst)]);
-                    let jump_pos = code.len();
-                    code.push(OP![Jmp]); // Placeholder
-                    let _right = compile_expr(rhs, code, frame, dst);
-                    let offset = code.len() - jump_pos;
-                    code[jump_pos] = OP![Jmp(0, offset)];
-                    dst
-                }
-                InfixOp::Or => {
-                    code.push(OP![IsTC(dst, dst)]);
-                    let jump_pos = code.len();
-                    code.push(OP![Jmp]); // Placeholder
-                    let _right = compile_expr(rhs, code, frame, dst);
-                    let offset = code.len() - jump_pos;
-                    code[jump_pos] = OP![Jmp(0, offset)];
-                    dst
-                }
-                InfixOp::Add => {
-                    let right = frame.alloc_temp();
-                    let r = compile_expr(rhs, code, frame, right);
-                    code.push(OP![AddVV(dst, left, r)]);
-                    dst
-                }
-                InfixOp::Sub => {
-                    let right = frame.alloc_temp();
-                    let r = compile_expr(rhs, code, frame, right);
-                    code.push(OP![SubVV(dst, left, r)]);
-                    dst
-                }
-                InfixOp::Mul => {
-                    let right = frame.alloc_temp();
-                    let r = compile_expr(rhs, code, frame, right);
-                    code.push(OP![MulVV(dst, left, r)]);
-                    dst
-                }
-                InfixOp::Div => {
-                    let right = frame.alloc_temp();
-                    let r = compile_expr(rhs, code, frame, right);
-                    code.push(OP![DivVV(dst, left, r)]);
-                    dst
-                }
-                InfixOp::Mod => {
-                    let right = frame.alloc_temp();
-                    let r = compile_expr(rhs, code, frame, right);
-                    code.push(OP![ModVV(dst, left, r)]);
-                    dst
-                }
-                InfixOp::Pow => {
-                    let right = frame.alloc_temp();
-                    let r = compile_expr(rhs, code, frame, right);
-                    code.push(OP![Pow(dst, left, r)]);
-                    dst
-                }
-                InfixOp::Eq => {
-                    let right = frame.alloc_temp();
-                    let r = compile_expr(rhs, code, frame, right);
-                    code.push(OP![IsEqV(left, r)]);
-                    dst
-                }
-                InfixOp::NotEq => {
-                    let right = frame.alloc_temp();
-                    let r = compile_expr(rhs, code, frame, right);
-                    code.push(OP![IsNeV(left, r)]);
-                    dst
-                }
-                InfixOp::Less => {
-                    let right = frame.alloc_temp();
-                    let r = compile_expr(rhs, code, frame, right);
-                    code.push(OP![IsLt(left, r)]);
-                    dst
-                }
-                InfixOp::Greater => {
-                    let right = frame.alloc_temp();
-                    let r = compile_expr(rhs, code, frame, right);
-                    code.push(OP![IsGt(left, r)]);
-                    dst
-                }
-                InfixOp::LessEq => {
-                    let right = frame.alloc_temp();
-                    let r = compile_expr(rhs, code, frame, right);
-                    code.push(OP![IsLe(left, r)]);
-                    dst
-                }
-                InfixOp::GreaterEq => {
-                    let right = frame.alloc_temp();
-                    let r = compile_expr(rhs, code, frame, right);
-                    code.push(OP![IsGe(left, r)]);
-                    dst
-                }
-                InfixOp::Concat => {
-                    let right = frame.alloc_temp();
-                    let r = compile_expr(rhs, code, frame, right);
-                    code.push(OP![Cat(dst, left, r)]);
-                    dst
-                }
-                InfixOp::FloorDiv => {
-                    let right = frame.alloc_temp();
-                    let r = compile_expr(rhs, code, frame, right);
-                    code.push(OP![IDivVV(dst, left, r)]);
-                    dst
-                }
-                InfixOp::BitAnd => {
-                    let right = frame.alloc_temp();
-                    let r = compile_expr(rhs, code, frame, right);
-                    code.push(OP![BAndVV(dst, left, r)]);
-                    dst
-                }
-                InfixOp::BitOr => {
-                    let right = frame.alloc_temp();
-                    let r = compile_expr(rhs, code, frame, right);
-                    code.push(OP![BOrVV(dst, left, r)]);
-                    dst
-                }
-                InfixOp::BitXor => {
-                    let right = frame.alloc_temp();
-                    let r = compile_expr(rhs, code, frame, right);
-                    code.push(OP![BXorVV(dst, left, r)]);
-                    dst
-                }
-                InfixOp::ShiftL => {
-                    let right = frame.alloc_temp();
-                    let r = compile_expr(rhs, code, frame, right);
-                    code.push(OP![ShLVV(dst, left, r)]);
-                    dst
-                }
-                InfixOp::ShiftR => {
-                    let right = frame.alloc_temp();
-                    let r = compile_expr(rhs, code, frame, right);
-                    code.push(OP![ShRVV(dst, left, r)]);
-                    dst
-                }
-            }
-        }
-        Expression::Unary(op, expr) => {
-            let val = compile_expr(expr, code, frame, dst);
-            match op {
-                UnaryOp::Not => code.push(OP![Not(dst, val)]),
-                UnaryOp::Minus => code.push(OP![UNM(dst, val)]),
-                UnaryOp::Len => code.push(OP![Len(dst, val)]),
-                UnaryOp::BitNot => code.push(OP![BNot(dst, val)]),
-            }
-            dst
-        }
-        // ...weitere Expression-Typen...
-        _ => dst
-    }
-}
-
-// Weitere Hilfsfunktionen und Strukturen können hier ergänzt werden.

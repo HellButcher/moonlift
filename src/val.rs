@@ -1,3 +1,5 @@
+use std::fmt;
+
 /*
 ** Internel format of gc references from lua-jit:
 **
@@ -35,6 +37,7 @@
 ** GC objects are at the end, table/userdata must be lowest.
 ** Also check lj_ir.h for similar ordering constraints.
 */
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[non_exhaustive]
 #[repr(u8)]
 pub enum TypeTag {
@@ -87,7 +90,7 @@ pub union Value {
 pub struct GCRef(u64);
 
 impl Value {
-    pub const NIL: Self = Self::primitive(TypeTag::Nil);
+    pub const NIL: Self = Self::primitive(TypeTag::Nil); // -1i64 or !0u64
     pub const FALSE: Self = Self::primitive(TypeTag::False);
     pub const TRUE: Self = Self::primitive(TypeTag::True);
 
@@ -108,8 +111,22 @@ impl Value {
     }
 
     #[inline]
+    pub const fn nil() -> Self {
+        Self::NIL
+    }
+
+    #[inline]
+    pub const fn bool(b: bool) -> Self {
+        if b {
+            Self::TRUE
+        } else {
+            Self::FALSE
+        }
+    }
+
+    #[inline]
     pub const fn f64(f: f64) -> Self {
-        let i: i64 = unsafe { f64::to_bits(f).cast_signed() };
+        let i: i64 = f.to_bits().cast_signed();
         assert!(((i >> 47) as u32) < !13);
         Self{ f }
     }
@@ -119,12 +136,85 @@ impl Value {
         Self::tagged(TypeTag::Int, u as u64)
     }
 
+    #[inline]
+    pub const fn i32(i: i32) -> Self {
+        Self::tagged(TypeTag::Int, (i as i64) as u64 & (!0u64 >> 17))
+    }
+
+    #[inline]
+    pub const fn u64(u: u64) -> Option<Self> {
+        if u > (!0u64 >> 18) {
+            None
+        } else {
+            Some(Self::tagged(TypeTag::Int, u))
+        }
+    }
+
+    #[inline]
+    pub const fn i64(i: i64) -> Option<Self> {
+        if i < (!(!0u64 >> 18)) as i64 || i > ((!0u64 >> 18) as i64){
+            None
+        } else {
+            Some(Self::tagged(TypeTag::Int, (i as i64) as u64 & (!0u64 >> 17)))
+        }
+    }
+
+    pub fn is_truthy(&self) -> bool {
+        match self.type_tag() {
+            TypeTag::Nil | TypeTag::False => false,
+            TypeTag::Float => self.as_f64() != 0.0,
+            TypeTag::Int => self.as_u64() != 0,
+            _ => true,
+        }
+    }
+
+    #[inline]
+    pub fn is_falsy(&self) -> bool {
+        !self.is_truthy()
+    }
+
+    #[inline]
+    pub const fn as_f64(self) -> f64 {
+        unsafe { self.f }
+    }
+
+    #[inline]
+    pub const fn as_i64(self) -> i64 {
+        (unsafe { self.i } << 17) >> 17
+    }
+
+    #[inline]
+    pub const fn as_u64(self) -> u64 {
+        (unsafe { self.u }) & (!0u64 >> 17)
+    }
+
     pub const fn type_tag(self) -> TypeTag {
         let t = unsafe { (self.i >> 47) as u32 };
         if t < !13 {
             TypeTag::Float
         } else {
             unsafe { std::mem::transmute(t as u8) }
+        }
+    }
+}
+
+impl PartialEq for Value {
+    fn eq(&self, other: &Self) -> bool {
+        unsafe { self.u == other.u }
+    }
+}
+
+impl Eq for Value {}
+
+impl fmt::Debug for Value {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.type_tag() {
+            TypeTag::Nil => write!(f, "nil"),
+            TypeTag::False => write!(f, "false"),
+            TypeTag::True => write!(f, "true"),
+            TypeTag::Int => write!(f, "{}i", unsafe { self.i as i32 }),
+            TypeTag::Float => write!(f, "{}f", unsafe { self.f }),
+            tag => write!(f, "<{:?} {:p}>", tag, self as *const _),
         }
     }
 }

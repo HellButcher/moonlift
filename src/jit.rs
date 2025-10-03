@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::ast::{Expression, InfixOp, Number, Statement, UnaryOp};
-use crate::Source;
+use crate::Ast;
 use cranelift::prelude::*;
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{DataDescription, Linkage, Module};
@@ -49,7 +49,7 @@ impl JIT {
         }
     }
 
-    pub fn compile(&mut self, source: &Source) -> Result<(), String> {
+    pub fn compile(&mut self, source: &Ast) -> Result<(), String> {
         // TODO: error handling
         self.compile_fn(&[], &source.block)?;
         Ok(())

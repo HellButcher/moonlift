@@ -1,16 +1,11 @@
-use std::convert::Infallible;
+use std::{convert::Infallible, io};
 
 use crate::{
-    ast::*,
-    lexer::{Lexer, LexerError, Position, Source, Token},
+    Error, ErrorWithPosition, ast::*, lexer::{Lexer, LexerError, Position, Source, Token}
 };
 
 #[derive(thiserror::Error, Debug, PartialEq)]
-pub enum ParseError<IoError = Infallible, VisitorError = Infallible> {
-    #[error(transparent)]
-    LexerError(#[from] LexerError<IoError>),
-    #[error(transparent)]
-    CodegenError(VisitorError),
+pub enum ParseError {
     #[error("Unexpected token {got}: expected {expected}, got {got}")]
     UnexpectedToken {
         expected: &'static str,
@@ -25,10 +20,10 @@ pub enum ParseError<IoError = Infallible, VisitorError = Infallible> {
     },
 }
 
-pub struct Parser<'a, S, V> {
+pub struct Parser<'a, S, V: ?Sized> {
     lex: &'a mut Lexer<S>,
     lookahead: Vec<Token>,
-    visitor: V,
+    visitor: &'a mut V,
 }
 
 pub trait ParseVisitor {
@@ -36,8 +31,11 @@ pub trait ParseVisitor {
     type Expr;
     type Proto;
 
-    fn enter_scope(&mut self);
-    fn leave_scope(&mut self);
+    fn enter_scope(&mut self) {}
+    fn leave_scope(&mut self) {}
+
+    fn enter_expr(&mut self) {}
+    fn leave_expr(&mut self) {}
 
     fn expr_number(&mut self, n: Number) -> Self::Expr;
     fn expr_string(&mut self, s: Box<[u8]>) -> Self::Expr;
@@ -45,12 +43,17 @@ pub trait ParseVisitor {
     fn expr_nil(&mut self) -> Self::Expr;
     fn expr_ellipsis(&mut self) -> Self::Expr;
     fn expr_function(&mut self, params: Self::Proto) -> Self::Expr;
-    fn expr_unary(&mut self, op: UnaryOp, expr: Self::Expr) -> Self::Expr;
-    fn expr_infix(&mut self, lhs: Self::Expr, op: InfixOp, rhs: Self::Expr) -> Self::Expr;
     fn expr_var(&mut self, name: String) -> Self::Expr;
     fn expr_index(&mut self, expr: Self::Expr, index: Self::Expr) -> Self::Expr;
     fn expr_field(&mut self, expr: Self::Expr, name: String) -> Self::Expr;
-    fn expr_call(&mut self, prefix: Self::Expr, method: String, args: Vec<Self::Expr>) -> Self::Expr;
+    fn expr_self(&mut self, prefix: Self::Expr, method: String) -> Self::Expr;
+    fn expr_call(&mut self, prefix: Self::Expr, args: Vec<Self::Expr>, is_method: bool) -> Self::Expr;
+
+    fn expr_prefix(&mut self, op: UnaryOp, expr: Self::Expr) -> Self::Expr;
+    // infix first emitted as `let tmp = expr_infix(lhs, op);`
+    // then rhs is emitted as `let expr = expr_infix(tmp, op, rhs);`
+    fn expr_infix(&mut self, lhs: Self::Expr, op: InfixOp) -> Self::Expr;
+    fn expr_postfix(&mut self, infix: Self::Expr, op: InfixOp, rhs: Self::Expr) -> Self::Expr;
 
     fn expr_table_begin(&mut self);
     fn expr_table_field_index(&mut self, key: Self::Expr, value: Self::Expr);
@@ -78,6 +81,9 @@ pub trait ParseVisitor {
     fn stmt_loop_foreach(&mut self, vars: Vec<String>, exprs: Vec<Self::Expr>);
     fn stmt_endloop(&mut self);
 
+    fn stmt_do(&mut self) {}
+    fn stmt_enddo(&mut self) {}
+
     fn stmt_locals(&mut self, names: Vec<(String,String)>, exprs: Vec<Self::Expr>);
     fn stmt_return(&mut self, exprs: Vec<Self::Expr>);
     fn stmt_function(&mut self, name: FuncName, proto: Self::Proto);
@@ -90,10 +96,22 @@ pub trait ParseVisitorOutput: ParseVisitor {
     type Output;
     fn start(&mut self) -> Result<(), Self::Error>;
     fn done(&mut self) -> Result<Self::Output, Self::Error>;
+
+    fn parse_bytes(&mut self, bytes: impl AsRef<[u8]>) -> Result<Self::Output, ErrorWithPosition<Infallible, Self::Error>> {
+        let mut lexer = Lexer::from_bytes(bytes);
+        let mut parser = Parser::new(&mut lexer, self);
+        parser.parse_with_err_pos()
+    }
+
+    fn parse_read(&mut self, read: impl io::Read) -> Result<Self::Output, ErrorWithPosition<io::Error,Self::Error>> {
+        let mut lexer = Lexer::read(read);
+        let mut parser = Parser::new(&mut lexer, self);
+        parser.parse_with_err_pos()
+    }
 }
 
-impl<'a, S: Source, V> Parser<'a, S, V> {
-    pub fn new(lex: &'a mut Lexer<S>, visitor: V) -> Self {
+impl<'a, S: Source, V: ?Sized> Parser<'a, S, V> {
+    pub fn new(lex: &'a mut Lexer<S>, visitor: &'a mut V) -> Self {
         Self {
             lex,
             lookahead: Vec::new(),
@@ -151,93 +169,103 @@ impl<'a, S: Source, V> Parser<'a, S, V> {
     }
 
     #[inline]
-    fn expect_keyword<E>(&mut self, kw: &'static str) -> Result<(), ParseError<S::Error, E>> {
+    fn expect_keyword<E>(&mut self, kw: &'static str) -> Result<(), Error<S::Error, E>> {
         match self.next_token()? {
             Token::Keyword(k) if k == kw => Ok(()),
-            e => Err(ParseError::UnexpectedToken {
+            e => Err(Error::ParseError(ParseError::UnexpectedToken {
                 got: e.name(),
                 expected: kw,
-            }),
+            })),
         }
     }
 
     #[inline]
-    fn expect_symbol<E>(&mut self, sym: &'static str) -> Result<(), ParseError<S::Error, E>> {
+    fn expect_symbol<E>(&mut self, sym: &'static str) -> Result<(), Error<S::Error, E>> {
         match self.next_token()? {
             Token::Symbol(s) if s == sym => Ok(()),
-            e => Err(ParseError::UnexpectedToken {
+            e => Err(Error::ParseError(ParseError::UnexpectedToken {
                 got: e.name(),
                 expected: sym,
-            }),
+            })),
         }
     }
 
-    fn expect_match<E>(&mut self, close: &'static str, opened_by: &'static str, opened_pos: Position) -> Result<(), ParseError<S::Error, E>> {
+    fn expect_match<E>(&mut self, close: &'static str, opened_by: &'static str, opened_pos: Position) -> Result<(), Error<S::Error, E>> {
         match self.next_token()? {
             Token::Symbol(s) | Token::Keyword(s) if s == close => Ok(()),
-            e => Err(ParseError::UnexpectedClosingToken {
+            e => Err(Error::ParseError(ParseError::UnexpectedClosingToken {
                 got: e.name(),
                 expected: close,
                 opening: opened_by,
                 opening_pos: opened_pos,
-            }),
+            })),
         }
     }
 
     #[inline]
-    fn expect_name<E>(&mut self) -> Result<String, ParseError<S::Error, E>> {
+    fn expect_name<E>(&mut self) -> Result<String, Error<S::Error, E>> {
         match self.next_token()? {
             Token::Name(name) => Ok(name),
-            e => Err(ParseError::UnexpectedToken {
+            e => Err(Error::ParseError(ParseError::UnexpectedToken {
                 got: e.name(),
                 expected: "<Name>",
-            }),
+            })),
         }
     }
 
     #[inline]
-    fn expect_string<E>(&mut self) -> Result<Box<[u8]>, ParseError<S::Error, E>> {
+    fn expect_string<E>(&mut self) -> Result<Box<[u8]>, Error<S::Error, E>> {
         match self.next_token()? {
             Token::String(s) => Ok(s),
-            e => Err(ParseError::UnexpectedToken {
+            e => Err(Error::ParseError(ParseError::UnexpectedToken {
                 got: e.name(),
                 expected: "<StringLiteral>",
-            }),
+            })),
         }
     }
 
     #[inline]
-    fn expect_number<E>(&mut self) -> Result<Number, ParseError<S::Error, E>> {
+    fn expect_number<E>(&mut self) -> Result<Number, Error<S::Error, E>> {
         match self.next_token()? {
             Token::Number(n) => Ok(n),
-            e => Err(ParseError::UnexpectedToken {
+            e => Err(Error::ParseError(ParseError::UnexpectedToken {
                 got: e.name(),
                 expected: "<Numeral>",
-            }),
+            })),
         }
     }
 }
 
 
-impl<'a, S: Source, V: ParseVisitorOutput> Parser<'a, S, V> {
-    pub fn parse(&mut self) -> Result<V::Output, ParseError<S::Error, V::Error>> {
+impl<'a, S: Source, V: ParseVisitorOutput + ?Sized> Parser<'a, S, V> {
+    pub fn parse(&mut self) -> Result<V::Output, Error<S::Error, V::Error>> {
         self.visitor.start();
         self.parse_block()?;
         match self.next_token()? {
             Token::Eof => Self::wrap_visitor_error(self.visitor.done()),
-            t => Err(ParseError::UnexpectedToken {
+            t => Err(Error::ParseError(ParseError::UnexpectedToken {
                 got: t.name(),
                 expected: "EOF (end of file)",
+            })),
+        }
+    }
+
+    pub fn parse_with_err_pos(&mut self) -> Result<V::Output, ErrorWithPosition<S::Error, V::Error>> {
+        match self.parse() {
+            Ok(output) => Ok(output),
+            Err(e) => Err(ErrorWithPosition {
+                error: e,
+                position: self.lex.position(),
             }),
         }
     }
 }
 
-impl<'a, S: Source, V: ParseVisitor> Parser<'a, S, V> {
+impl<'a, S: Source, V: ParseVisitor + ?Sized> Parser<'a, S, V> {
     fn wrap_visitor_error<T>(
         res: Result<T, V::Error>,
-    ) -> Result<T, ParseError<S::Error, V::Error>> {
-        res.map_err(ParseError::CodegenError)
+    ) -> Result<T, Error<S::Error, V::Error>> {
+        res.map_err(Error::CodegenError)
     }
 
     /// Parses a Lua `block`.
@@ -246,10 +274,10 @@ impl<'a, S: Source, V: ParseVisitor> Parser<'a, S, V> {
     /// ```ebnf
     /// block ::= {stat} [retstat]
     /// ```
-    fn parse_block(&mut self) -> Result<(), ParseError<S::Error, V::Error>> {
+    fn parse_block(&mut self) -> Result<(), Error<S::Error, V::Error>> {
         self.visitor.enter_scope();
         self.parse_statement_list()?;
-        self.visitor.leave_scope();
+        self.visitor.enter_scope();
         Ok(())
     }
 
@@ -259,14 +287,14 @@ impl<'a, S: Source, V: ParseVisitor> Parser<'a, S, V> {
     /// ```ebnf
     /// block ::= {stat} [retstat]
     /// ```
-    fn parse_statement_list(&mut self) -> Result<(), ParseError<S::Error, V::Error>> {
+    fn parse_statement_list(&mut self) -> Result<(), Error<S::Error, V::Error>> {
         while !self.is_block_follow(true)? {
             self.parse_statement()?;
         }
         Ok(())
     }
 
-    fn is_block_follow<E>(&mut self, with_until: bool) -> Result<bool, ParseError<S::Error, E>>{
+    fn is_block_follow<E>(&mut self, with_until: bool) -> Result<bool, Error<S::Error, E>>{
         let t = self.peek_token()?;
         Ok(matches!(
             t,
@@ -296,7 +324,7 @@ impl<'a, S: Source, V: ParseVisitor> Parser<'a, S, V> {
     ///           'local' attnamelist ['=' explist]
     /// retstat ::= return [explist] [‘;’]
     /// ```
-    fn parse_statement(&mut self) -> Result<(), ParseError<S::Error, V::Error>> {
+    fn parse_statement(&mut self) -> Result<(), Error<S::Error, V::Error>> {
         match self.peek_token()? {
             // stat ::= ';'
             Token::Symbol(";") => {
@@ -346,7 +374,7 @@ impl<'a, S: Source, V: ParseVisitor> Parser<'a, S, V> {
     /// ```ebnf
     /// label ::= ‘::’ Name ‘::’
     /// ```
-    fn parse_labelstat(&mut self) -> Result<(), ParseError<S::Error, V::Error>> {
+    fn parse_labelstat(&mut self) -> Result<(), Error<S::Error, V::Error>> {
         self.expect_symbol("::")?;
         let label = self.expect_name()?;
         self.expect_symbol("::")?;
@@ -360,7 +388,7 @@ impl<'a, S: Source, V: ParseVisitor> Parser<'a, S, V> {
     /// ```ebnf
     /// stat ::=  'break'
     /// ```
-    fn parse_breakstat(&mut self) -> Result<(), ParseError<S::Error, V::Error>> {
+    fn parse_breakstat(&mut self) -> Result<(), Error<S::Error, V::Error>> {
         self.expect_keyword("break")?;
         self.visitor.stmt_break();
         Ok(())
@@ -372,7 +400,7 @@ impl<'a, S: Source, V: ParseVisitor> Parser<'a, S, V> {
     /// ```ebnf
     /// stat ::=  'goto' Name
     /// ```
-    fn parse_gotostat(&mut self) -> Result<(), ParseError<S::Error, V::Error>> {
+    fn parse_gotostat(&mut self) -> Result<(), Error<S::Error, V::Error>> {
         self.expect_keyword("goto")?;
         let label = self.expect_name()?;
         self.visitor.stmt_goto(label);
@@ -385,7 +413,7 @@ impl<'a, S: Source, V: ParseVisitor> Parser<'a, S, V> {
     /// ```ebnf
     /// retstat ::= return [explist] [‘;’]
     /// ```
-    fn parse_retstat(&mut self) -> Result<(), ParseError<S::Error, V::Error>> {
+    fn parse_retstat(&mut self) -> Result<(), Error<S::Error, V::Error>> {
         self.expect_keyword("return")?;
         let mut exprs = Vec::new();
         if !self.is_block_follow(true)? && !self.try_symbol(";")? {
@@ -405,7 +433,7 @@ impl<'a, S: Source, V: ParseVisitor> Parser<'a, S, V> {
     /// ```ebnf
     /// stat ::= 'if' exp 'then' block {'elseif' exp 'then' block} ['else' block] 'end'
     /// ```
-    fn parse_ifstat(&mut self) -> Result<(), ParseError<S::Error, V::Error>> {
+    fn parse_ifstat(&mut self) -> Result<(), Error<S::Error, V::Error>> {
         self.expect_keyword("if")?;
         let if_pos = self.lex.position();
         self.parse_test_then_block()?;
@@ -446,7 +474,7 @@ impl<'a, S: Source, V: ParseVisitor> Parser<'a, S, V> {
     /// test_then_block ::= ~'if'~ exp 'then' block
     /// test_then_block ::= ~'elseif'~ exp 'then' block
     /// ```
-    fn parse_test_then_block(&mut self) -> Result<(), ParseError<S::Error, V::Error>> {
+    fn parse_test_then_block(&mut self) -> Result<(), Error<S::Error, V::Error>> {
         let cond = self.parse_expression()?;
         self.expect_keyword("then")?;
         self.visitor.stmt_if(cond);
@@ -461,10 +489,12 @@ impl<'a, S: Source, V: ParseVisitor> Parser<'a, S, V> {
     /// ```ebnf
     /// stat ::= 'do' block 'end'
     /// ```
-    fn parse_dostat(&mut self) -> Result<(), ParseError<S::Error, V::Error>> {
+    fn parse_dostat(&mut self) -> Result<(), Error<S::Error, V::Error>> {
         self.expect_keyword("do")?;
         let do_pos = self.lex.position();
+        self.visitor.stmt_do();
         self.parse_block()?;
+        self.visitor.stmt_enddo();
         self.expect_match("end", "do", do_pos)?;
         Ok(())
     }
@@ -475,7 +505,7 @@ impl<'a, S: Source, V: ParseVisitor> Parser<'a, S, V> {
     /// ```ebnf
     /// stat ::= 'while' exp 'do' block 'end'
     /// ```
-    fn parse_whilestat(&mut self) -> Result<(), ParseError<S::Error, V::Error>> {
+    fn parse_whilestat(&mut self) -> Result<(), Error<S::Error, V::Error>> {
         self.expect_keyword("while")?;
         let while_pos = self.lex.position();
         self.visitor.stmt_loop();
@@ -494,7 +524,7 @@ impl<'a, S: Source, V: ParseVisitor> Parser<'a, S, V> {
     /// ```ebnf
     /// stat ::= 'repeat' block 'until' exp
     /// ```
-    fn parse_repeatstat(&mut self) -> Result<(), ParseError<S::Error, V::Error>> {
+    fn parse_repeatstat(&mut self) -> Result<(), Error<S::Error, V::Error>> {
         self.expect_keyword("repeat")?;
         let repeat_pos = self.lex.position();
         self.visitor.stmt_loop();
@@ -516,7 +546,7 @@ impl<'a, S: Source, V: ParseVisitor> Parser<'a, S, V> {
     /// stat ::= 'for' Name '=' exp ',' exp [',' exp] 'do' block 'end'
     /// stat ::= 'for' namelist 'in' explist 'do' block 'end'
     /// ```
-    fn parse_forstat(&mut self) -> Result<(), ParseError<S::Error, V::Error>> {
+    fn parse_forstat(&mut self) -> Result<(), Error<S::Error, V::Error>> {
         self.expect_keyword("for")?;
         let for_pos = self.lex.position();
         let var = self.expect_name()?;
@@ -555,6 +585,7 @@ impl<'a, S: Source, V: ParseVisitor> Parser<'a, S, V> {
             self.parse_block()?;
             self.expect_match("end", "for", for_pos)?;
             self.visitor.stmt_endloop();
+            self.visitor.leave_scope();
         }
         Ok(())
     }
@@ -565,7 +596,7 @@ impl<'a, S: Source, V: ParseVisitor> Parser<'a, S, V> {
     /// ```ebnf
     /// stat ::= 'function' funcname funcbody
     /// ```
-    fn parse_functionstat(&mut self) -> Result<(), ParseError<S::Error, V::Error>> {
+    fn parse_functionstat(&mut self) -> Result<(), Error<S::Error, V::Error>> {
         self.expect_keyword("function")?;
         let func_pos = self.lex.position();
         let name = self.parse_funcname()?;
@@ -580,7 +611,7 @@ impl<'a, S: Source, V: ParseVisitor> Parser<'a, S, V> {
     /// ```ebnf
     /// stat ::= ~'local'~ function Name funcbody
     /// ```
-    fn parse_localfunctionstat(&mut self) -> Result<(), ParseError<S::Error, V::Error>> {
+    fn parse_localfunctionstat(&mut self) -> Result<(), Error<S::Error, V::Error>> {
         self.expect_keyword("function")?;
         let func_pos = self.lex.position();
         let name = self.expect_name()?;
@@ -596,7 +627,7 @@ impl<'a, S: Source, V: ParseVisitor> Parser<'a, S, V> {
     /// ```ebnf
     /// stat ::= ~'local'~ attnamelist ['=' explist]
     /// ```
-    fn parse_localvarstat(&mut self) -> Result<(), ParseError<S::Error, V::Error>> {
+    fn parse_localvarstat(&mut self) -> Result<(), Error<S::Error, V::Error>> {
         let mut vars = vec![self.parse_nameattrib()?];
         while self.try_symbol(",")? {
             vars.push(self.parse_nameattrib()?);
@@ -619,7 +650,7 @@ impl<'a, S: Source, V: ParseVisitor> Parser<'a, S, V> {
     /// stat ::= varlist '=' explist
     /// stat ::= functioncall
     /// ```
-    fn parse_expressionstat(&mut self) -> Result<(), ParseError<S::Error, V::Error>> {
+    fn parse_expressionstat(&mut self) -> Result<(), Error<S::Error, V::Error>> {
         let expr = self.parse_prefixexpr()?;
         let token = self.peek_token()?;
         if matches!(token, Token::Symbol("=" | ",")) {
@@ -654,7 +685,7 @@ impl<'a, S: Source, V: ParseVisitor> Parser<'a, S, V> {
     ///         unop exp
     /// ```
     #[inline]
-    fn parse_expression(&mut self) -> Result<V::Expr, ParseError<S::Error, V::Error>> {
+    fn parse_expression(&mut self) -> Result<V::Expr, Error<S::Error, V::Error>> {
         self.parse_expression_with_precedence(0)
     }
 
@@ -678,79 +709,30 @@ impl<'a, S: Source, V: ParseVisitor> Parser<'a, S, V> {
     fn parse_expression_with_precedence(
         &mut self,
         base_precedence: u8,
-    ) -> Result<V::Expr, ParseError<S::Error, V::Error>> {
-        let mut e = match self.peek_token()? {
-            // exp ::= nil
-            Token::Keyword("nil") => {
-                self.pop_token();
-                self.visitor.expr_nil()
-            }
-            // exp ::= 'false'
-            Token::Keyword("false") => {
-                self.pop_token();
-                self.visitor.expr_boolean(false)
-            }
-            // exp ::= 'true'
-            Token::Keyword("true") => {
-                self.pop_token();
-                self.visitor.expr_boolean(true)
-            }
-            // exp ::= Numeral
-            Token::Number(_) => {
-                let n = self.expect_number()?;
-                self.visitor.expr_number(n)
-            }
-            // exp ::= LiteralString
-            Token::String(_) => {
-                let s = self.expect_string()?;
-                self.visitor.expr_string(s)
-            }
-            // exp ::= '...'
-            Token::Symbol("...") => {
-                self.pop_token();
-                self.visitor.expr_ellipsis()
-            }
-            // exp ::= functiondef
-            Token::Keyword("function") => {
-                self.pop_token();
-                let func_pos = self.lex.position();
-                let proto= self.parse_funcbody(func_pos, false)?;
-                self.visitor.expr_function(proto) 
-            }
-            // exp ::= tableconstructor
-            Token::Symbol("{") => self.parse_table()?,
-            // exp ::= prefixexp
-            Token::Symbol("(") | Token::Name(_) => self.parse_prefixexpr()?,
-            // exp ::= unop exp
-            Token::Keyword(s) | Token::Symbol(s) => {
-                if let Some(op) = UnaryOp::from_str(s) {
-                    self.pop_token();
-                    let exp = self.parse_expression_with_precedence(UnaryOp::PRECEDENCE_LEVEL)?;
-                    self.visitor.expr_unary(op, exp)
-                } else {
-                    return Err(ParseError::UnexpectedToken {
-                        got: s,
-                        expected: "expression",
-                    });
-                }
-            }
-            // error branch
-            t => {
-                return Err(ParseError::UnexpectedToken {
-                    got: t.name(),
-                    expected: "expression",
-                })
-            }
-        };
+    ) -> Result<V::Expr, Error<S::Error, V::Error>> {
+        self.visitor.enter_expr();
 
+        let mut e = if let Some(op) = self.try_unary_op()? {
+            // exp ::= unop exp
+            let exp = self.parse_expression_with_precedence(UnaryOp::PRECEDENCE_LEVEL)?;
+            self.visitor.expr_prefix(op, exp)
+        } else {
+            // exp ::= ... (see `parse_simpleexpr`)
+            self.parse_simpleexpr()?
+        };
+        
         // exp ::= exp binop exp
         while let Some((op, mut precedence)) = self.try_infix_op(base_precedence)? {
             if op.is_right_associative() {
                 precedence -= 1;
             }
+            let tmp = self.visitor.expr_infix(e, op);
             let rhs = self.parse_expression_with_precedence(precedence)?;
-            e = self.visitor.expr_infix(e, op, rhs);
+            e = self.visitor.expr_postfix(tmp, op, rhs);
         }
+
+        self.visitor.leave_expr();
+
         Ok(e)
     }
 
@@ -771,6 +753,82 @@ impl<'a, S: Source, V: ParseVisitor> Parser<'a, S, V> {
         Ok(None)
     }
 
+    fn try_unary_op(&mut self) -> Result<Option<UnaryOp>, LexerError<S::Error>> {
+        if let Token::Symbol(s) | Token::Keyword(s) = self.peek_token()? {
+            let s = *s;
+            if let Some(op) = UnaryOp::from_str(s) {
+                self.pop_token();
+                return Ok(Some(op));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Parses a simple Lua expression (no operators).
+    ///
+    /// Grammar:
+    /// ```ebnf
+    /// exp ::= 'nil' |
+    ///         'false' |
+    ///         'true' |
+    ///         Numeral |
+    ///         LiteralString |
+    ///         '...' |
+    ///         functiondef |
+    ///         prefixexp |
+    ///         tableconstructor
+    /// ```
+    fn parse_simpleexpr(&mut self) -> Result<V::Expr, Error<S::Error, V::Error>> {
+        match self.peek_token()? {
+            // exp ::= nil
+            Token::Keyword("nil") => {
+                self.pop_token();
+                Ok(self.visitor.expr_nil())
+            }
+            // exp ::= 'false'
+            Token::Keyword("false") => {
+                self.pop_token();
+                Ok(self.visitor.expr_boolean(false))
+            }
+            // exp ::= 'true'
+            Token::Keyword("true") => {
+                self.pop_token();
+                Ok(self.visitor.expr_boolean(true))
+            }
+            // exp ::= Numeral
+            Token::Number(_) => {
+                let n = self.expect_number()?;
+                Ok(self.visitor.expr_number(n))
+            }
+            // exp ::= LiteralString
+            Token::String(_) => {
+                let s = self.expect_string()?;
+                Ok(self.visitor.expr_string(s))
+            }
+            // exp ::= '...'
+            Token::Symbol("...") => {
+                self.pop_token();
+                Ok(self.visitor.expr_ellipsis())
+            }
+            // exp ::= functiondef
+            Token::Keyword("function") => {
+                self.pop_token();
+                let func_pos = self.lex.position();
+                let proto= self.parse_funcbody(func_pos, false)?;
+                Ok(self.visitor.expr_function(proto))
+            }
+            // exp ::= tableconstructor
+            Token::Symbol("{") => self.parse_table(),
+            // exp ::= prefixexp
+            Token::Symbol("(") | Token::Name(_) => self.parse_prefixexpr(),
+            // error branch
+            t => Err(Error::ParseError(ParseError::UnexpectedToken {
+                got: t.name(),
+                expected: "expression",
+            })),
+        }
+    }
+
     /// Parses a Lua `prefixexp`, `functioncall` and `var`
     ///
     /// Grammar:
@@ -784,29 +842,9 @@ impl<'a, S: Source, V: ParseVisitor> Parser<'a, S, V> {
     ///          prefixexp ‘[’ exp ‘]’ |
     ///          prefixexp ‘.’ Name 
     /// ```
-    fn parse_prefixexpr(&mut self) -> Result<V::Expr, ParseError<S::Error, V::Error>> {
-        let mut e = match self.peek_token()? {
-            // prefixexp ::= '(' exp ')'
-            Token::Symbol("(") => {
-                self.pop_token();
-                    let open_pos = self.lex.position();
-                let exp = self.parse_expression()?;
-                self.expect_match(")", "(", open_pos)?;
-                exp
-            }
-            // var ::=  Name
-            Token::Name(_) => {
-                let n = self.expect_name()?;
-                self.visitor.expr_var(n)
-            }
-            // error branch
-            t => {
-                return Err(ParseError::UnexpectedToken {
-                    got: t.name(),
-                    expected: "prefix expression",
-                })
-            }
-        };
+    fn parse_prefixexpr(&mut self) -> Result<V::Expr, Error<S::Error, V::Error>> {
+        // Name | '(' exp ')'
+        let mut e = self.parse_primaryexpr()?;
         // Suffixes: '[', '.', ':', args
         loop {
             match self.peek_token()? {
@@ -831,18 +869,46 @@ impl<'a, S: Source, V: ParseVisitor> Parser<'a, S, V> {
                 Token::Symbol(":") => {
                     self.pop_token();
                     let method = self.expect_name()?;
+                    e = self.visitor.expr_self(e, method);
                     let args = self.parse_args()?;
-                    e = self.visitor.expr_call(e, method, args)
+                    e = self.visitor.expr_call(e, args, true)
                 }
                 // prefixexp ::= functioncall
                 // functioncall ::= prefixexp args
                 Token::Symbol("(" | "{") | Token::String(_) => {
                     let args = self.parse_args()?;
-                    e = self.visitor.expr_call(e, String::new(), args)
+                    e = self.visitor.expr_call(e,  args, false)
                 }
                 // end of prefixexp
                 _ => return Ok(e),
             }
+        }
+    }
+
+    /// Parses a Lua primary `prefixexp` (`Name` and `'(' exp ')'`).
+    ///
+    /// Grammar:
+    /// ```ebnf
+    /// var ::=  Name
+    /// prefixexp ::= '(' exp ')'
+    /// ```
+    fn parse_primaryexpr(&mut self) -> Result<V::Expr, Error<S::Error, V::Error>> {
+        match self.peek_token()? {
+            Token::Symbol("(") => {
+                self.pop_token();
+                let open_pos = self.lex.position();
+                let exp = self.parse_expression()?;
+                self.expect_match(")", "(", open_pos)?;
+                Ok(exp)
+            }
+            Token::Name(_) => {
+                let n = self.expect_name()?;
+                Ok(self.visitor.expr_var(n))
+            }
+            t => Err(Error::ParseError(ParseError::UnexpectedToken {
+                got: t.name(),
+                expected: "primary expression",
+            })),
         }
     }
 
@@ -853,7 +919,7 @@ impl<'a, S: Source, V: ParseVisitor> Parser<'a, S, V> {
     /// tableconstructor ::= '{' [fieldlist] '}'
     /// fieldlist ::= field {fieldsep field} [fieldsep]
     /// ```
-    fn parse_table(&mut self) -> Result<V::Expr, ParseError<S::Error,V::Error>> {
+    fn parse_table(&mut self) -> Result<V::Expr, Error<S::Error,V::Error>> {
         self.expect_symbol("{")?;
         let open_pos = self.lex.position();
         self.visitor.expr_table_begin();
@@ -881,7 +947,7 @@ impl<'a, S: Source, V: ParseVisitor> Parser<'a, S, V> {
     ///           Name '=' exp |
     ///           exp
     /// ```
-    fn parse_field(&mut self) -> Result<(), ParseError<S::Error,V::Error>> {
+    fn parse_field(&mut self) -> Result<(), Error<S::Error,V::Error>> {
         match self.peek_token()? {
             // field ::= '[' exp ']' '=' exp
             Token::Symbol("[") => {
@@ -921,7 +987,7 @@ impl<'a, S: Source, V: ParseVisitor> Parser<'a, S, V> {
     /// args ::= '(' [explist] ')'
     /// explist ::= exp {',' exp}
     /// ```
-    fn parse_arglist(&mut self) -> Result<Vec<V::Expr>, ParseError<S::Error, V::Error>> {
+    fn parse_arglist(&mut self) -> Result<Vec<V::Expr>, Error<S::Error, V::Error>> {
         self.expect_symbol("(")?;
         let open_pos = self.lex.position();
         if !self.try_symbol(")")? {
@@ -939,7 +1005,7 @@ impl<'a, S: Source, V: ParseVisitor> Parser<'a, S, V> {
     /// ```ebnf
     /// explist ::= exp {',' exp}
     /// ``
-    fn parse_explist(&mut self) -> Result<Vec<V::Expr>, ParseError<S::Error, V::Error>> {
+    fn parse_explist(&mut self) -> Result<Vec<V::Expr>, Error<S::Error, V::Error>> {
         let mut args = Vec::new();
         args.push(self.parse_expression()?);
         while self.try_symbol(",")? {
@@ -954,7 +1020,7 @@ impl<'a, S: Source, V: ParseVisitor> Parser<'a, S, V> {
     /// ```ebnf
     /// args ::= '(' [explist] ')' | tableconstructor | LiteralString
     /// ```
-    fn parse_args(&mut self) -> Result<Vec<V::Expr>, ParseError<S::Error, V::Error>> {
+    fn parse_args(&mut self) -> Result<Vec<V::Expr>, Error<S::Error, V::Error>> {
         match self.peek_token()? {
             // args ::= '(' [explist] ')'
             Token::Symbol("(") => {
@@ -972,10 +1038,10 @@ impl<'a, S: Source, V: ParseVisitor> Parser<'a, S, V> {
             }
             // error branch
             t => {
-                Err(ParseError::UnexpectedToken {
+                Err(Error::ParseError(ParseError::UnexpectedToken {
                     got: t.name(),
                     expected: "arguments",
-                })
+                }))
             }
         }
     }
@@ -986,7 +1052,7 @@ impl<'a, S: Source, V: ParseVisitor> Parser<'a, S, V> {
     /// ```ebnf
     /// funcname ::= Name {'.' Name} [':' Name]
     /// ```
-    fn parse_funcname(&mut self) -> Result<FuncName, ParseError<S::Error, V::Error>> {
+    fn parse_funcname(&mut self) -> Result<FuncName, Error<S::Error, V::Error>> {
         let mut qname = vec![self.expect_name()?];
         // {'.' Name}
         while self.try_symbol(".")? {
@@ -1007,7 +1073,7 @@ impl<'a, S: Source, V: ParseVisitor> Parser<'a, S, V> {
     /// parlist ::= namelist [',' '...'] | '...'
     /// namelist ::= Name {',' Name}
     /// ```
-    fn parse_parlist(&mut self) -> Result<Params, ParseError<S::Error, V::Error>> {
+    fn parse_parlist(&mut self) -> Result<Params, Error<S::Error, V::Error>> {
         let mut names = Vec::new();
         loop {
             match self.peek_token()? {
@@ -1048,7 +1114,7 @@ impl<'a, S: Source, V: ParseVisitor> Parser<'a, S, V> {
     /// ```ebnf
     /// funcbody ::= '(' [parlist] ')' block end
     /// ```
-    fn parse_funcbody(&mut self, begin_pos: Position, is_method: bool) -> Result<V::Proto, ParseError<S::Error, V::Error>> {
+    fn parse_funcbody(&mut self, begin_pos: Position, is_method: bool) -> Result<V::Proto, Error<S::Error, V::Error>> {
         self.expect_symbol("(")?;
         // [parlist]
         let params = self.parse_parlist()?;
@@ -1066,7 +1132,7 @@ impl<'a, S: Source, V: ParseVisitor> Parser<'a, S, V> {
     /// attnamelist ::= Name attrib {',' Name attrib}
     /// attrib ::= ['<' Name '>']
     /// ```
-    fn parse_nameattrib(&mut self) -> Result<(String, String), ParseError<S::Error, V::Error>> {
+    fn parse_nameattrib(&mut self) -> Result<(String, String), Error<S::Error, V::Error>> {
         // Name
         let name = self.expect_name()?;
         // attrib ::= ['<' Name '>']
@@ -1088,8 +1154,9 @@ mod tests {
 
     #[test]
     fn expr1() {
+        let mut visitor = AstVisitor::new();
         let mut lexer = Lexer::from_bytes("not a and b or c and d > -e");
-        let expr = Parser::new(&mut lexer, AstVisitor::new()).parse_expression();
+        let expr = Parser::new(&mut lexer, &mut visitor).parse_expression();
         assert_eq!(
             Ok(Expression::Infix(
                 Box::new(Expression::Infix(
@@ -1120,8 +1187,9 @@ mod tests {
 
     #[test]
     fn expr2() {
+        let mut visitor = AstVisitor::new();
         let mut lexer = Lexer::from_bytes("t1.n == (t2.n or #t2) + 1");
-        let expr = Parser::new(&mut lexer, AstVisitor::new()).parse_expression();
+        let expr = Parser::new(&mut lexer, &mut visitor).parse_expression();
         assert_eq!(
             Ok(Expression::Infix(
                 Box::new(Expression::Field(Box::new(Expression::Var("t1".to_string())), "n".to_string())),
@@ -1154,7 +1222,8 @@ mod tests {
           for i = 2, t1.n do assert(true) end
         ",
         );
-        let mut parser = Parser::new(&mut lexer, AstVisitor::new());
+        let mut visitor = AstVisitor::new();
+        let mut parser = Parser::new(&mut lexer, &mut visitor);
         let a = parser.parse_statement();
         assert_eq!(Ok(()), a);
         assert_eq!(

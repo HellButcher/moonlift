@@ -291,6 +291,7 @@ define_opcodes!{
             vm.pc += 1;
         }
     },
+    /*
     // Jump if A = D
     IsEqS(a: var, d: str) {
         if (a != d) {
@@ -327,7 +328,8 @@ define_opcodes!{
             vm.pc += 1;
         }
     },
-
+    */
+    
     // Copy D to A and jump, if D is true
     IsTC(a: dst, d: var) {
         // TODO
@@ -510,22 +512,22 @@ define_opcodes!{
     USetV(a: uvdst, d: var) {
       let a = d;
     },
-    // Set upvalue A to string constant D
-    USetS(a: uvdst, d: str) {
-      let a = d;
-    },
-    // Set upvalue A to number constant D
-    USetN(a: uvdst, d: num) {
-      let a = d;
-    },
-    // Set upvalue A to 16bit signed  integer D
-    USetB(a: uvdst, d: lit) {
-      let a = d;
-    },
-    // Set upvalue A to primitive D
-    USetP(a: uvdst, d: pri) {
-      let a = d;
-    },
+    // // Set upvalue A to string constant D
+    // USetS(a: uvdst, d: str) {
+    //   let a = d;
+    // },
+    // // Set upvalue A to number constant D
+    // USetN(a: uvdst, d: num) {
+    //   let a = d;
+    // },
+    // // Set upvalue A to 16bit signed  integer D
+    // USetB(a: uvdst, d: lit) {
+    //   let a = d;
+    // },
+    // // Set upvalue A to primitive D
+    // USetP(a: uvdst, d: pri) {
+    //   let a = d;
+    // },
     // Close upvalues for slots >= rbase and jump to target D
     UClo(a: rbase, d: jump) {
       // TODO
@@ -671,12 +673,12 @@ impl OpCode {
         Self::IsGt |
         Self::IsEqV |
         Self::IsNeV |
-        Self::IsEqS |
-        Self::IsNeS |
-        Self::IsEqN |
-        Self::IsNeN |
-        Self::IsEqP |
-        Self::IsNeP |
+        // Self::IsEqS |
+        // Self::IsNeS |
+        // Self::IsEqN |
+        // Self::IsNeN |
+        // Self::IsEqP |
+        // Self::IsNeP |
         Self::IsTC |
         Self::IsFC |
         Self::IsT |
@@ -692,14 +694,14 @@ impl OpCode {
           Self::IsGt => Some(Self::IsLe),
           Self::IsEqV => Some(Self::IsNeV),
           Self::IsNeV => Some(Self::IsEqV),
-          Self::IsEqS => Some(Self::IsNeS),
-          Self::IsNeS => Some(Self::IsEqS),
-          Self::IsEqN => Some(Self::IsNeN),
-          Self::IsNeN => Some(Self::IsEqN),
-          Self::IsEqP => Some(Self::IsNeP),
-          Self::IsNeP => Some(Self::IsEqP),
-          Self::IsTC => Some(Self::IsFC),
-          Self::IsFC => Some(Self::IsTC),
+          // Self::IsEqS => Some(Self::IsNeS),
+          // Self::IsNeS => Some(Self::IsEqS),
+          // Self::IsEqN => Some(Self::IsNeN),
+          // Self::IsNeN => Some(Self::IsEqN),
+          // Self::IsEqP => Some(Self::IsNeP),
+          // Self::IsNeP => Some(Self::IsEqP),
+          Self::IsTC => Some(Self::IsF),
+          Self::IsFC => Some(Self::IsT),
           Self::IsT => Some(Self::IsF),
           Self::IsF => Some(Self::IsT),
           _ => None,
@@ -708,6 +710,7 @@ impl OpCode {
 }
 
 impl Op {
+  #[inline]
   pub fn opcode(&self) -> OpCode {
       // SAFETY: Because `Self` is marked `repr(u8)`, its layout is a `repr(C)` `union`
       // between `repr(C)` structs, each of which has the `u8` discriminant as its first
@@ -715,24 +718,30 @@ impl Op {
       // Also the discriminant value is the same as the `OpCode` value.
       unsafe { *<*const _>::from(self).cast::<OpCode>() }
   }
-  
-  pub fn is_condition(&self) -> bool {
-      self.opcode().is_cond()
-  }
 
-  pub fn negate(&mut self) -> bool {
-      let mut r = *self;
+  #[inline]
+  pub fn set_opcode(&mut self, new_opcode: OpCode) {
       // SAFETY: Because `Self` is marked `repr(u8)`, its layout is a `repr(C)` `union`
       // between `repr(C)` structs, each of which has the `u8` discriminant as its first
       // field, so we can read the discriminant without offsetting the pointer.
       // Also the discriminant value is the same as the `OpCode` value.
       unsafe {
-        let mut_opcode = <*mut _>::from(&mut r).cast::<OpCode>();
-        let Some(new_opcode) = r.opcode().negated() else {
-            return false;
-        };
+        let mut_opcode = <*mut _>::from(self).cast::<OpCode>();
         mut_opcode.write(new_opcode);
       }
+  }
+  
+  #[inline]
+  pub fn is_condition(&self) -> bool {
+      self.opcode().is_cond()
+  }
+
+  #[inline]
+  pub fn negate(&mut self) -> bool {
+      let Some(new_opcode) = self.opcode().negated() else {
+          return false;
+      };
+      self.set_opcode(new_opcode);
       true
   }
 }

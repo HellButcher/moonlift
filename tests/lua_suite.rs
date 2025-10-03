@@ -1,25 +1,34 @@
-use moonlift::Source;
+use moonlift::{Ast, Bytecode};
 use std::fs;
 use std::path::Path;
 
-fn parse_test(path: impl AsRef<Path>) -> Source {
+fn parse_test(path: impl AsRef<Path>) -> Ast {
     let path = path.as_ref();
     eprintln!("parsing {}", path.display());
-    match Source::read(fs::OpenOptions::new().read(true).open(path).unwrap()) {
+    match Ast::read(fs::OpenOptions::new().read(true).open(path).unwrap()) {
         Ok(s) => s,
         Err(e) => panic!("Error while parsing {}: {:?}", path.display(), e),
     }
 }
 
-fn compile_test(source: &Source) {
+fn parse_test_and_compile_to_bytecode(path: impl AsRef<Path>) -> Bytecode {
+    let path = path.as_ref();
+    eprintln!("parsing {}", path.display());
+    match Bytecode::parse(fs::OpenOptions::new().read(true).open(path).unwrap()) {
+        Ok(s) => s,
+        Err(e) => panic!("Error while parsing {}: {:?}", path.display(), e),
+    }
+}
+
+fn compile_test_jit(source: &Ast) {
     let mut jit = moonlift::jit::JIT::new();
     jit.compile(source).unwrap()
 }
 
+
 #[test]
-fn parse_and_compile_test__all() {
-    let s = parse_test("lua/testes/all.lua");
-    compile_test(&s);
+fn parse_and_compile_bc_test__all() {
+    parse_test_and_compile_to_bytecode("lua/testes/all.lua");
 }
 #[test]
 fn parse_test__api() {
