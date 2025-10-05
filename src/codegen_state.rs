@@ -261,8 +261,8 @@ impl ProgramCounter {
     pub const NO_JUMP: Self = Self(!0);
 
     #[inline]
-    pub const fn as_offset_relative_to(self, relative_to_pc: Self) -> u16 {
-        (self.0 as isize - relative_to_pc.0 as isize) as u16
+    pub const fn as_offset_relative_to(self, relative_to_pc: Self) -> i16 {
+        (self.0 as isize - relative_to_pc.0 as isize) as i16
     }
 }
 
@@ -384,7 +384,7 @@ impl ProtoGenerator {
         let (a, b) = self.bytecode.split_at_mut(jump_op_pc.0);
         let jump_op = &mut b[0];
         #[cfg(debug_assertions)]
-        if !matches!(jump_op, Op::Jmp(_)) {
+        if !matches!(jump_op.opcode(), OpCode::Jmp) {
             panic!("get_jmp_ctrl called on non-jump opcode");
         }
         let Some(prev_op) = a.last_mut() else {
@@ -402,22 +402,29 @@ impl ProtoGenerator {
     /// Returns the target PC of a jump instruction
     #[inline]
     pub fn get_jmp_target(&self, jump_op_pc: ProgramCounter) -> ProgramCounter {
-        let Op::Jmp(args) = &self.bytecode[jump_op_pc.0] else {
+        let jump_op = &self.bytecode[jump_op_pc.0];
+        if !matches!(jump_op.opcode(), OpCode::Jmp) {
             panic!("get_jmp_target called on non-jump opcode");
-        };
-        if args.d == !0 {
+        }
+        let d = jump_op.args().d();
+        if d == !0 {
             return ProgramCounter::NO_JUMP;
         } else {
-            ProgramCounter((jump_op_pc.0 as isize + args.d as isize) as usize)
+            ProgramCounter((jump_op_pc.0 as isize + d as isize) as usize)
         }
     }
 
     /// Updates a jump instruction to point to a new target PC
     pub fn patch_jmp_target(&mut self, jump_op_pc: ProgramCounter, target_pc: ProgramCounter) {
-        let Op::Jmp(args) = &mut self.bytecode[jump_op_pc.0] else {
-            panic!("update_jmp_target called on non-jump opcode");
-        };
-        args.d = target_pc.as_offset_relative_to(jump_op_pc);
+        let jump_op = &mut self.bytecode[jump_op_pc.0];
+        let new_offset = target_pc.as_offset_relative_to(jump_op_pc);
+        match_op! {(jump_op) {
+            Jmp(_, ref mut target) => {
+                *target = new_offset;
+            },
+            _ => panic!("update_jmp_target called on non-jump opcode"),
+
+        }}
     }
 
     /// Updates a list of jumps to point to a new target PC.
@@ -485,15 +492,23 @@ impl ProtoGenerator {
     /// instruction is patched to a simple IsT/IsF op (without setting register).
     pub fn patch_test_set_dest(&mut self, jump_op_pc: ProgramCounter, dest: Reg) -> bool {
         let jmp_ctrl = self.get_jmp_ctrl_mut(jump_op_pc);
-        let new_op = match jmp_ctrl {
-            Op::IsTC(args) | Op::IsFC(args) if dest != NO_REG && dest as u16 != args.d => {
-                args.a = dest;
-                return true;
-            }
-            Op::IsTC(args) => Op::IsT(*args),
-            Op::IsFC(args) => Op::IsF(*args),
+        let new_op = match_op!((jmp_ctrl) {
+            IsTC(_,d) => {
+                if dest != NO_REG && dest != d {
+                    op!(IsTC(dest, d))
+                } else {
+                    op!(IsT(d))
+                }
+            },
+            IsFC(_,d) => {
+                if dest != NO_REG && dest != d {
+                    op!(IsFC(dest, d))
+                } else {
+                    op!(IsF(d))
+                }
+            },
             _ => return false,
-        };
+        });
         *jmp_ctrl = new_op;
         true
     }
@@ -506,7 +521,7 @@ impl ProtoGenerator {
     }
 
     pub fn emit_jmp_placeholder(&mut self) -> ProgramCounter {
-        self.emit(Op::Jmp(crate::opcode::AD { a: 0, d: !0 }))
+        self.emit(op![Jmp(0, !0)])
     }
 
     pub fn emit_jmp(&mut self, target_pc: ProgramCounter) -> ProgramCounter {
@@ -515,7 +530,7 @@ impl ProtoGenerator {
 
     pub fn emit_jmp_x(&mut self, target_pc: ProgramCounter, arg: u8) -> ProgramCounter {
         let offset = target_pc.as_offset_relative_to(self.pc());
-        self.emit(Op::Jmp(crate::opcode::AD { a: arg, d: offset }))
+        self.emit(op![Jmp(arg, offset)])
     }
 
     #[inline]
@@ -529,17 +544,17 @@ impl ProtoGenerator {
     }
 
     pub fn patch_one_ret_pc(&mut self, pc: ProgramCounter) -> Option<ExprValue> {
-        match &mut self.bytecode[pc.0] {
-            Op::Call(args) => {
-                args.b = 2; // 1 result
-                Some(ExprValue::NonReloc(args.a)) // result is in base register
-            }
-            Op::VArg(args) => {
-                args.b = 2; // 1 result
+        match_op! {(&mut self.bytecode[pc.0]) {
+            Call(a,ref mut b,_) => {
+                *b = 2; // 1 result
+                Some(ExprValue::NonReloc(a)) // result is in base register
+            },
+            VArg(_,ref mut b,_) => {
+                *b = 2; // 1 result
                 Some(ExprValue::Reloc(pc))
-            }
+            },
             _ => None,
-        }
+        }}
     }
 
     /// Fix an expression to return one result.
@@ -570,32 +585,32 @@ impl ProtoGenerator {
                 *value = ExprValue::NonReloc(*r);
             },
             ExprValue::Global(k) => {
-                let pc = self.emit(OP![GGet(0, *k)]);
+                let pc = self.emit(op![GGet(0, *k)]);
                 *value = ExprValue::Reloc(pc);
             },
             ExprValue::Upval(uv) => {
-                let pc = self.emit(OP![UGet(0, *uv)]);
+                let pc = self.emit(op![UGet(0, *uv)]);
                 *value = ExprValue::Reloc(pc);
             }
             ExprValue::Idx {
                 table_slot,
                 key_slot,
             } => {
-                let pc = self.emit(OP![TGetV(0, *table_slot, *key_slot)]);
+                let pc = self.emit(op![TGetV(0, *table_slot, *key_slot)]);
                 *value = ExprValue::Reloc(pc);
             }
             ExprValue::IdxI {
                 table_slot,
                 key_value,
             } => {
-                let pc = self.emit(OP![TGetB(0, *table_slot, *key_value)]);
+                let pc = self.emit(op![TGetB(0, *table_slot, *key_value)]);
                 *value = ExprValue::Reloc(pc);
             }
             ExprValue::IdxStr {
                 table_slot,
                 key_const,
             } => {
-                let pc = self.emit(OP![TGetS(0, *table_slot, *key_const)]);
+                let pc = self.emit(op![TGetS(0, *table_slot, *key_const)]);
                 *value = ExprValue::Reloc(pc);
             }
             ExprValue::Call(pc) | ExprValue::VarArg(pc) => {
@@ -617,24 +632,24 @@ impl ProtoGenerator {
         dest: u8,
     ) -> Result<ProgramCounter, CodeGenerationError> {
         match value {
-            ConstValue::Nil => Ok(self.emit(OP![KPri(dest, 0)])),
-            ConstValue::Bool(false) => Ok(self.emit(OP![KPri(dest, 1)])),
-            ConstValue::Bool(true) => Ok(self.emit(OP![KPri(dest, 2)])),
+            ConstValue::Nil => Ok(self.emit(op![KPri(dest, 0)])),
+            ConstValue::Bool(false) => Ok(self.emit(op![KPri(dest, 1)])),
+            ConstValue::Bool(true) => Ok(self.emit(op![KPri(dest, 2)])),
             ConstValue::Int(i) => {
                 if i16::MIN as i64 <= i && i <= i16::MAX as i64 {
-                    Ok(self.emit(OP![KShort(dest, i as i16)]))
+                    Ok(self.emit(op![KShort(dest, i as i16)]))
                 } else {
                     let k = self.constants.add_integer(i)?;
-                    Ok(self.emit(OP![KNum(dest, k)]))
+                    Ok(self.emit(op![KNum(dest, k)]))
                 }
             }
             ConstValue::Float(f) => {
                 let k = self.constants.add_float(f)?;
-                Ok(self.emit(OP![KNum(dest, k)]))
+                Ok(self.emit(op![KNum(dest, k)]))
             }
             ConstValue::Str(s) => {
                 let k = self.constants.add_string(s)?;
-                Ok(self.emit(OP![KStr(dest, k)]))
+                Ok(self.emit(op![KStr(dest, k)]))
             }
         }
     }
@@ -655,7 +670,7 @@ impl ProtoGenerator {
             }
             ExprValue::NonReloc(r) if r == dest => {}
             ExprValue::NonReloc(r) => {
-                self.emit(OP![Mov(dest, r)]);
+                self.emit(op![Mov(dest, r)]);
             }
             ExprValue::Reloc(pc) => {
                 self[pc].set_a_dst(dest).expect("invalid op");
@@ -761,24 +776,26 @@ impl ProtoGenerator {
     ) -> ProgramCounter {
         let value = self.discharge_vars(value);
         if let ExprValue::Reloc(pc) = value {
-            if let Op::Not(args) = self[pc] {
-                debug_assert_eq!(self.pc().0, pc.0 + 1);
-                // Invert condition and remove NOT
-                if condition {
-                    self[pc] = OP![IsF(0, args.d)];
-                } else {
-                    self[pc] = OP![IsT(0, args.d)];
-                }
-                let pc = self.emit_jmp_placeholder();
-                return pc;
-            }
+            match_op!((self[pc]) {
+                Not(a,d) => {
+                    debug_assert_eq!(self.pc().0, pc.0 + 1);
+                    if condition {
+                        self[pc] = op![IsFC(a, d)];
+                    } else {
+                        self[pc] = op![IsTC(a, d)];
+                    }
+                    let pc = self.emit_jmp_placeholder();
+                    return pc;
+                },
+                _ => {}
+            });
         }
         let reg = self.discharge_to_any_reg(value).unwrap().unwrap_reg();
         self.frame.free(reg);
         if condition {
-            self.emit(OP![IsTC(reg)]);
+            self.emit(op![IsTC(0, reg)]);
         } else {
-            self.emit(OP![IsFC(reg)]);
+            self.emit(op![IsFC(0, reg)]);
         }
         self.emit_jmp_placeholder()
     }

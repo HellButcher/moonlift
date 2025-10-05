@@ -4,7 +4,7 @@ use core::panic;
 
 use crate::{
     ast::*, codegen_state::{
-        BytecodeGenerator, CodeGenerationError, ConstValue, DischargedRegOrJmp, Expr, ExprValue, Frame, JumpList, ProgramCounter, Proto, ProtoGenerator
+        BytecodeGenerator, CodeGenerationError, ConstValue, DischargedRegOrJmp, Expr, ExprValue, JumpList, Proto, ProtoGenerator
     }, opcode::Op, parser::{ParseVisitor, ParseVisitorOutput}
 };
 
@@ -19,30 +19,30 @@ impl BytecodeGenerator {
             }
             ExprValue::Global(key_const) => {
                 let val_slot = self.expr_to_any_reg(&mut rvalue).unwrap();
-                self.emit(OP![GSet(val_slot, key_const)]);
+                self.emit(op![GSet(val_slot, key_const)]);
                 self.expr_free(&rvalue.value);
             }
             ExprValue::Idx { table_slot, key_slot } => {
                 let val_slot = self.expr_to_any_reg(&mut rvalue).unwrap();
-                self.emit(OP![TSetV(val_slot, table_slot, key_slot)]);
+                self.emit(op![TSetV(val_slot, table_slot, key_slot)]);
                 self.expr_free(&rvalue.value);
                 // TODO: how to free table_slot and key_slot?
             },
             ExprValue::IdxI { table_slot, key_value } => {
                 let val_slot = self.expr_to_any_reg(&mut rvalue).unwrap();
-                self.emit(OP![TSetB(val_slot, table_slot, key_value)]);
+                self.emit(op![TSetB(val_slot, table_slot, key_value)]);
                 self.expr_free(&rvalue.value);
                 // TODO: how to free table_slot
             }
             ExprValue::IdxStr { table_slot, key_const } => {
                 let val_slot = self.expr_to_any_reg(&mut rvalue).unwrap();
-                self.emit(OP![TSetS(val_slot, table_slot, key_const)]);
+                self.emit(op![TSetS(val_slot, table_slot, key_const)]);
                 self.expr_free(&rvalue.value);
                 // TODO: how to free table_slot
             }
             ExprValue::Upval(uv) => {
                 let val_slot = self.expr_to_any_reg(&mut rvalue).unwrap();
-                self.emit(OP![USetV(uv, val_slot)]);
+                self.emit(op![USetV(uv, val_slot)]);
                 self.expr_free(&rvalue.value);
             }
             _ => panic!("Invalid lvalue in assignment"),
@@ -115,7 +115,7 @@ impl ParseVisitor for BytecodeGenerator {
             return Expr::Void;
         }
         // Vararg expression - emit an instruction to get varargs
-        let pc = self.emit(OP![VArg(0, 0, 0)]); // Will be fixed later
+        let pc = self.emit(op![VArg(0, 0, 0)]); // Will be fixed later
         Expr::new(ExprValue::VarArg(pc))
     }
 
@@ -126,7 +126,7 @@ impl ParseVisitor for BytecodeGenerator {
         // For now, just return a placeholder - full function compilation would be complex
         // In a real implementation, we'd need to compile the proto into a codegen_state::Proto
         let _ = proto; // Silence warning
-        let pc = self.emit(OP![FNew(0, 0)]); // Placeholder function index
+        let pc = self.emit(op![FNew(0, 0)]); // Placeholder function index
         Expr::Reloc(pc)
     }
 
@@ -147,7 +147,7 @@ impl ParseVisitor for BytecodeGenerator {
                     DischargedRegOrJmp::Reg(src_reg) => {
                         self.expr_free(&expr.value);
                         // Emit NOT instruction
-                        OP![Not(0, src_reg)]
+                        op![Not(0, src_reg)]
                     }
                     DischargedRegOrJmp::Jmp(pc) => {
                         // negate the jump condition
@@ -162,17 +162,17 @@ impl ParseVisitor for BytecodeGenerator {
             UnaryOp::BitNot => {
                 let src_reg = self.expr_to_any_reg(&mut expr).unwrap();
                 self.expr_free(&expr.value);
-                OP![BNot(0, src_reg)]
+                op![BNot(0, src_reg)]
             },
             UnaryOp::Minus => {
                 let src_reg = self.expr_to_any_reg(&mut expr).unwrap();
                 self.expr_free(&expr.value);
-                OP![UNM(0, src_reg)]
+                op![UNM(0, src_reg)]
             },
             UnaryOp::Len => {
                 let src_reg = self.expr_to_any_reg(&mut expr).unwrap();
                 self.expr_free(&expr.value);
-                OP![Len(0, src_reg)]
+                op![Len(0, src_reg)]
             },
         };
         debug_assert!(!expr.has_jumps()); // TODO: is this correct here?
@@ -260,15 +260,18 @@ impl ParseVisitor for BytecodeGenerator {
             // Ensure rhs is in the next register
             let rhs_reg = self.expr_to_next_reg(&mut rhs).unwrap();
             self.expr_free2(&lhs.value, &rhs.value);
-            if let Some(Op::Cat(args)) = self.bytecode.last_mut() {
-                // Extend existing CONCAT instruction
-                debug_assert_eq!(lhs_reg + 1, args.b);
-                args.b = lhs_reg;
-                return rhs;
-            } else {
-                let pc = self.emit(OP![Cat(0, lhs_reg, rhs_reg)]); // concat two values
-                return Expr::Reloc(pc);
+            if let Some(op) = self.bytecode.last_mut() {
+                match_op! {(op) {
+                    Cat(_,ref mut b,_) => {
+                        debug_assert_eq!(lhs_reg + 1, *b);
+                        *b = lhs_reg; // extend existing CONCAT instruction
+                        return rhs;
+                    },
+                    _ => {},
+                }}
             }
+            let pc = self.emit(op![Cat(0, lhs_reg, rhs_reg)]); // concat two values
+            return Expr::Reloc(pc);
         }
 
         // TODO: handle constant arguments with specialized opcodes
@@ -281,31 +284,31 @@ impl ParseVisitor for BytecodeGenerator {
 
         match op {
             // Comparison operators generate conditional jumps
-            InfixOp::Less => self.emit(OP![IsLt(lhs_reg, rhs_reg)]),
-            InfixOp::Greater => self.emit(OP![IsGt(lhs_reg, rhs_reg)]),
-            InfixOp::LessEq => self.emit(OP![IsLe(lhs_reg, rhs_reg)]),
-            InfixOp::GreaterEq => self.emit(OP![IsGe(lhs_reg, rhs_reg)]),
+            InfixOp::Less => self.emit(op![IsLt(lhs_reg, rhs_reg)]),
+            InfixOp::Greater => self.emit(op![IsGt(lhs_reg, rhs_reg)]),
+            InfixOp::LessEq => self.emit(op![IsLe(lhs_reg, rhs_reg)]),
+            InfixOp::GreaterEq => self.emit(op![IsGe(lhs_reg, rhs_reg)]),
             // TODO: use specialized opcodes for constants when possible
-            InfixOp::Eq => self.emit(OP![IsEqV(lhs_reg, rhs_reg)]),
-            InfixOp::NotEq => self.emit(OP![IsNeV(lhs_reg, rhs_reg)]),
+            InfixOp::Eq => self.emit(op![IsEqV(lhs_reg, rhs_reg)]),
+            InfixOp::NotEq => self.emit(op![IsNeV(lhs_reg, rhs_reg)]),
 
             _ => {
                 let pc = match op {
                     // TODO: use specialized opcodes for constants when possible
-                    InfixOp::Add => self.emit(OP![AddVV(0, lhs_reg, rhs_reg)]),
-                    InfixOp::Sub => self.emit(OP![SubVV(0, lhs_reg, rhs_reg)]),
-                    InfixOp::Mul => self.emit(OP![MulVV(0, lhs_reg, rhs_reg)]),
-                    InfixOp::Div => self.emit(OP![DivVV(0, lhs_reg, rhs_reg)]),
-                    InfixOp::FloorDiv => self.emit(OP![IDivVV(0, lhs_reg, rhs_reg)]),
-                    InfixOp::Mod => self.emit(OP![ModVV(0, lhs_reg, rhs_reg)]),
+                    InfixOp::Add => self.emit(op![AddVV(0, lhs_reg, rhs_reg)]),
+                    InfixOp::Sub => self.emit(op![SubVV(0, lhs_reg, rhs_reg)]),
+                    InfixOp::Mul => self.emit(op![MulVV(0, lhs_reg, rhs_reg)]),
+                    InfixOp::Div => self.emit(op![DivVV(0, lhs_reg, rhs_reg)]),
+                    InfixOp::FloorDiv => self.emit(op![IDivVV(0, lhs_reg, rhs_reg)]),
+                    InfixOp::Mod => self.emit(op![ModVV(0, lhs_reg, rhs_reg)]),
 
-                    InfixOp::Pow => self.emit(OP![Pow(0, lhs_reg, rhs_reg)]),
-                    InfixOp::BitAnd => self.emit(OP![BAndVV(0, lhs_reg, rhs_reg)]),
-                    InfixOp::BitOr => self.emit(OP![BOrVV(0, lhs_reg, rhs_reg)]),
-                    InfixOp::BitXor => self.emit(OP![BXorVV(0, lhs_reg, rhs_reg)]),
-                    InfixOp::ShiftL => self.emit(OP![ShLVV(0, lhs_reg, rhs_reg)]),
-                    InfixOp::ShiftR => self.emit(OP![ShRVV(0, lhs_reg, rhs_reg)]),
-                    InfixOp::Concat => self.emit(OP![Cat(0, lhs_reg, rhs_reg)]),
+                    InfixOp::Pow => self.emit(op![Pow(0, lhs_reg, rhs_reg)]),
+                    InfixOp::BitAnd => self.emit(op![BAndVV(0, lhs_reg, rhs_reg)]),
+                    InfixOp::BitOr => self.emit(op![BOrVV(0, lhs_reg, rhs_reg)]),
+                    InfixOp::BitXor => self.emit(op![BXorVV(0, lhs_reg, rhs_reg)]),
+                    InfixOp::ShiftL => self.emit(op![ShLVV(0, lhs_reg, rhs_reg)]),
+                    InfixOp::ShiftR => self.emit(op![ShRVV(0, lhs_reg, rhs_reg)]),
+                    InfixOp::Concat => self.emit(op![Cat(0, lhs_reg, rhs_reg)]),
 
                     _ => unreachable!(),
                 };
@@ -362,7 +365,7 @@ impl ParseVisitor for BytecodeGenerator {
                 } else {
                     // Too many constants, fall back to normal indexing
                     let key_slot = self.frame.alloc_temp();
-                    self.emit(OP![KStr(key_slot, key_const)]);
+                    self.emit(op![KStr(key_slot, key_const)]);
                     // TODO: how to free key_slot?
                     Expr::new(ExprValue::Idx {
                         table_slot,
@@ -401,7 +404,7 @@ impl ParseVisitor for BytecodeGenerator {
         } else {
             // Too many constants, fall back to normal indexing
             let key_slot = self.frame.alloc_temp();
-            self.emit(OP![KStr(key_slot, key_const)]);
+            self.emit(op![KStr(key_slot, key_const)]);
             // TODO: how to free key_slot?
             Expr::new(ExprValue::Idx {
                 table_slot,
@@ -429,7 +432,7 @@ impl ParseVisitor for BytecodeGenerator {
         } else {
             // Too many constants, fall back to normal indexing
             let key_slot = self.frame.alloc_temp();
-            self.emit(OP![KStr(key_slot, key_const)]);
+            self.emit(op![KStr(key_slot, key_const)]);
             // TODO: how to free key_slot?
             Expr::new(ExprValue::Idx {
                 table_slot,
@@ -465,7 +468,7 @@ impl ParseVisitor for BytecodeGenerator {
         }
 
         // Emit call instruction
-        let pc = self.emit(OP![Call(func_slot, num_args + 1, 0)]); // +1 for function itself
+        let pc = self.emit(op![Call(func_slot, num_args + 1, 0)]); // +1 for function itself
 
         // TODO: free
 
@@ -480,7 +483,7 @@ impl ParseVisitor for BytecodeGenerator {
 
         // Create a new table and allocate a slot for it
         let table_slot = self.frame.alloc_temp();
-        self.emit(OP![TNew(table_slot, 0)]); // Empty table for now
+        self.emit(op![TNew(table_slot, 0)]); // Empty table for now
                                              // We would need to track this table slot somehow, for now simplified
     }
 
@@ -514,7 +517,7 @@ impl ParseVisitor for BytecodeGenerator {
         }
         // Return a placeholder table
         // This is simplified - a proper implementation would track the table construction
-        let pc = self.emit(OP![TNew(0, 0)]); // Empty table
+        let pc = self.emit(op![TNew(0, 0)]); // Empty table
         Expr::Reloc(pc)
     }
 
@@ -633,11 +636,11 @@ impl ParseVisitor for BytecodeGenerator {
             return;
         }
         if exprs.is_empty() {
-            self.emit(OP![Ret0]);
+            self.emit(op![Ret0]);
         } else if exprs.len() == 1 {
             let mut expr = exprs.pop().unwrap();
             let reg = self.expr_to_any_reg(&mut expr).unwrap();
-            self.emit(OP![Ret1(reg)]);
+            self.emit(op![Ret1(reg, 1)]);
             self.frame.free(reg);
         } else {
             let num_rets = exprs.len() as u8;
@@ -647,7 +650,7 @@ impl ParseVisitor for BytecodeGenerator {
                 let reg = first_reg + i as u8;
                 self.expr_to_reg(expr, reg).unwrap();
             }
-            self.emit(OP![Ret(first_reg, num_rets)]);
+            self.emit(op![Ret(first_reg, num_rets as u16)]);
             self.frame.free_range(regs);
         }
         self.dead = true; // TODO: reset dead back to false after block

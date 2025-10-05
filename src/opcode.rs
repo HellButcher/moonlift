@@ -1,76 +1,78 @@
+
 macro_rules! __mkop {
-    (type[$d:ident]) => (AD);
-    (type[$a:ident, $d:ident]) => (AD);
-    (type[$a:ident, $b:ident, $c:ident]) => (ABC);
+    (is_a_dst_impl [dst $(, $x:ident)*]) => (true);
+    (is_a_dst_impl [$($x:ident),*]) => (false);
 
-    (set_a_dst_impl $arg:ident $new_reg:ident [dst $(, $x:ident)*]) => ({
-      $arg.a = $new_reg;
-      return Ok(())
-    });
-    (set_a_dst_impl $arg:ident $new_reg:ident [$($x:ident),*]) => ({});
+    (is_ad_impl [$d:ident,]) => (true);
+    (is_ad_impl [$a:ident, $d:ident]) => (true);
+    (is_ad_impl [$($x:ident),*]) => (false);
 
-    (set_base_num_impl $arg:ident $new_num:ident [base, $x:ident, num]) => ({
-      $arg.c = $new_num;
-      return Ok($arg.a)
-    });
-    (set_base_num_impl $arg:ident $new_num:ident [base, num]) => ({
-      $arg.d = $new_num as u16;
-      return Ok($arg.a)
-    });
-    (set_base_num_impl $arg:ident $new_num:ident [$($x:ident),*]) => ({});
-
-    (mapargs $args:ident [$dname:ident: $dmode:ident] [$($rest:tt)*]) => {
-        __mkop![$($rest)* [$dname: $dmode = $args.d]];
-    };
-    (mapargs $args:ident [$aname:ident: $amode:ident, $dname:ident: $dmode:ident] [$($rest:tt)*]) => {
-        __mkop![$($rest)* [$aname: $amode = $args.a]];
-        __mkop![$($rest)* [$dname: $dmode = $args.d]];
-    };
-    (mapargs $args:ident [$aname:ident: $amode:ident, $bname:ident: $bmode:ident, $cname:ident: $cmode:ident] [$($rest:tt)*]) => {
-        __mkop![$($rest)* [$aname: $amode = $args.a]];
-        __mkop![$($rest)* [$bname: $bmode = $args.b]];
-        __mkop![$($rest)* [$cname: $cmode = $args.c]];
-    };
+    (is_base_and_num_impl [base, $x:ident, num]) => (true);
+    (is_base_and_num_impl [base, num]) => (true);
+    (is_base_and_num_impl [$($x:ident),*]) => (false);
 
     // Argument modes:
     // - dst: variable slot number, used as a destination
-    (letitem $vm:ident [$n:ident: dst = $e:expr]) => { };
+    (typeitem_d dst) => { u8 };
     // - uvdst: upvalue number, used as a destination
-    (letitem $vm:ident [$n:ident: uvdst = $e:expr]) => { };
+    (typeitem_d uvdst) => { u8 };
     // - var: variable slot number
-    (letitem $vm:ident [$n:ident: var = $e:expr]) => { let $n = $vm.get_var($e as u16); };
+    (typeitem_d var) => { u8 };
     // - base: base slot number, read-write
-    (letitem $vm:ident [$n:ident: base = $e:expr]) => {};
+    (typeitem_d base) => { u8 };
     // - rbase: base slot number, read-only
-    (letitem $vm:ident [$n:ident: rbase = $e:expr]) => {};
+    (typeitem_d rbase) => { u8 };
     // - uv: upvalue number
-    (letitem $vm:ident [$n:ident: uv = $e:expr]) => { let $n = $vm.get_uv($e as u16); };
+    (typeitem_d uv) => { u8 };
     // - str: string constant, negated index into constant table
-    (letitem $vm:ident [$n:ident: str = $e:expr]) => { let $n = $vm.get_str($e as u16); };
-    // - tab: template table, negated index into constant table
-    (letitem $vm:ident [$n:ident: tab = $e:expr]) => { let $n = $vm.get_tab($e as u16); };
+    (typeitem_d str) => { u16 };
+    // // - tab: template table, negated index into constant table
+    // (typeitem tab) => { }; // TODO
     // - num: number constant, index into constant table
-    (letitem $vm:ident [$n:ident: num = $e:expr]) => { let $n = $vm.get_num($e as u16); };
-    // - cdata: cdata constant, negated index into constant table
-    (letitem $vm:ident [$n:ident: cdata = $e:expr]) => { }; // TODO
+    (typeitem_d num) => { u16 };
+    // // - cdata: cdata constant, negated index into constant table
+    // (typeitem cdata) => { }; // TODO
     // - lit: literal
-    (letitem $vm:ident [$n:ident: lit = $e:expr]) => { let $n = $e as Value; }; // TODO
+    (typeitem_d lit) => { u16 };
     // - lits: signed literal
-    (letitem $vm:ident [$n:ident: lits = $e:expr]) => { let $n = $e as Value; }; // TODO
+    (typeitem_d lits) => { i16 };
     // - pri: primitive type (0 = nil, 1 = false, 2 = true)
-    (letitem $vm:ident [$n:ident: pri = $e:expr]) => { let $n = $e as Value; }; // TODO
+    (typeitem_d pri) => { u8 };
     // - jump: branch target, relative to next instruction, biased with 0x8000
-    (letitem $vm:ident [$n:ident: jump = $e:expr]) => { let $n = Jump($e); };
+    (typeitem_d jump) => { i16 };
     // - func: function prototype, negated index into constant table
-    (letitem $vm:ident [$n:ident: func = $e:expr]) => { let $n = $vm.get_func($e as u16); };
+    (typeitem_d func) => { u16 };
+
+    // Special handling of argument types, when used in abc positions:
+    (typeitem_abc str) => { u8 };
+    (typeitem_abc num) => { u8 };
+    (typeitem_abc lit) => { u8 };
+    (typeitem_abc lits) => { i8 };
+    (typeitem_abc jump) => { compile_error!("`jump` not supported in positions a, b or c"); };
+    (typeitem_abc func) => { compile_error!("`func` not supported in positions a, b or c"); };
+    (typeitem_abc $fallback:ident) => { __mkop!(typeitem_d $fallback) };
 
 
-    // - dst: variable slot number, used as a destination
-    (postitem $vm:ident [$n:ident: dst = $e:expr]) => { $vm.set_var($e as u16, $n); };
-    // - uvdst: upvalue number, used as a destination
-    (postitem $vm:ident [$n:ident: uvdst = $e:expr]) => { $vm.set_uv($e as u16, $n); };
-    // other
-    (postitem $vm:ident [$n:ident: $other:ident = $e:expr]) => { };
+    (tupletype ($d:ident)) => ( (__mkop!(typeitem_d $d),) );
+    (tupletype ($a:ident, $d:ident)) => ( (__mkop!(typeitem_abc $a), __mkop!(typeitem_d $d),) );
+    (tupletype ($a:ident, $b:ident, $c:ident)) => ( (__mkop!(typeitem_abc $a), __mkop!(typeitem_abc $b), __mkop!(typeitem_abc $c),) );
+
+    (intotuple ($d:ident) = $args:expr) => ({
+      let args: &Args = $args;
+      (args.d() as _,)
+    });
+    (intotuple ($a:ident, $d:ident) = $args:expr) => ({
+      let args: &Args = $args;
+      (args.a() as _, args.d() as _)
+    });
+    (intotuple ($a:ident, $b:ident, $c:ident) = $args:expr) => ({
+      let args: &Args = $args;
+      (args.a() as _, args.b() as _, args.c() as _)
+    });
+
+    (fromtuple ($d:ident)) => (Args::new_ad(0, $d as _));
+    (fromtuple ($a:ident, $d:ident)) => (Args::new_ad($a as _, $d as _));
+    (fromtuple ($a:ident, $b:ident, $c:ident)) => (Args::new_abc($a as _, $b as _, $c as _));
 }
 
 macro_rules! define_opcodes {
@@ -82,146 +84,371 @@ macro_rules! define_opcodes {
         #[repr(u8)]
         #[derive(Debug, Clone, Copy, PartialEq, Eq)]
         pub enum OpCode {
-            $($id),*
-        }
-
-        #[repr(u8)]
-        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-        pub enum Op {
             $(
-                $id (__mkop!(type[$($mode),*])) = OpCode::$id as u8
+                #[doc = concat!("Signature: `", stringify!($id ($($arg : $mode),*)), "`")]
+                ///
+                /// This opcode is equivalent to the following Rust code:
+                /// ```rust
+                #[doc = stringify!($($body)*)]
+                /// ```
+                $id
             ),*
         }
 
-        impl Op {
-
-            pub fn set_a_dst(&mut self, dst: u8) -> Result<(), crate::codegen_state::CodeGenerationError> {
-              match self {
-                $(
-                    Op::$id(_args) => __mkop!(set_a_dst_impl _args dst [$($mode),*]),
-                )*
-              }
-              Err(crate::codegen_state::CodeGenerationError::InvalidOpCode(self.opcode()))
-            }
-
-            pub fn set_base_num(&mut self, num: u8) -> Result<u8, crate::codegen_state::CodeGenerationError> {
-              match self {
-                $(
-                    Op::$id(_args) => __mkop!(set_base_num_impl _args num [$($mode),*]),
-                )*
-              }
-              Err(crate::codegen_state::CodeGenerationError::InvalidOpCode(self.opcode()))
-            }
-
-            fn exec(&self, $vm: &mut VM) {
-                match self {
-                    $(
-                        Op::$id(_args) => {
-                            __mkop!(mapargs _args[$($arg: $mode),*] [letitem $vm]);
-                            $($body)*
-                            __mkop!(mapargs _args[$($arg: $mode),*] [postitem $vm]);
-                        }
-                    ),*
+        impl OpCode {
+            pub const MAX: u8 = {
+                let mut v = 0;
+                const fn max(a: u8, b: u8) -> u8 {
+                    if a > b { a } else { b }
                 }
+                $(v = max(v, Self::$id as u8);)*
+                v
+            };
+            pub const MIN: u8 = {
+                let mut v = u8::MAX;
+                const fn min(a: u8, b: u8) -> u8 {
+                    if a < b { a } else { b }
+                }
+                $(v = min(v, Self::$id as u8);)*
+                v
+            };
+        }
+
+        $(
+          impl OpArgs<{OpCode::$id as u8}> for Args {
+              type Args = __mkop!(tupletype ($($mode),*));
+              fn get(&self) -> Self::Args {
+                  __mkop!(intotuple ($($arg),*) = self)
+              }
+              fn from(($($arg,)*): Self::Args) -> Self {
+                  __mkop!(fromtuple ($($arg),*))
+              }
+          }
+        )*
+
+        impl OpCode {
+          #[inline]
+          pub const fn is_a_dst(&self) -> bool {
+              match self {
+                  $(
+                      OpCode::$id => __mkop!(is_a_dst_impl [$($mode),*]),
+                  )*
+              }
+          }
+
+          #[inline]
+          pub const fn is_base_and_num(&self) -> bool {
+              match self {
+                  $(
+                      OpCode::$id => __mkop!(is_base_and_num_impl [$($mode),*]),
+                  )*
+              }
+          }
+
+          #[inline]
+          pub const fn is_ad(&self) -> bool {
+              match self {
+                  $(
+                      OpCode::$id => __mkop!(is_ad_impl [$($mode),*]),
+                  )*
+              }
+          }
+        }
+
+        #[cfg(false)]
+        impl Op {
+            fn exec(&self, $vm: &mut VM) {
+                match_op!((self) {
+                    $(
+                        $id ($($arg),*) => {
+                            $($body)*
+                        },
+                    )*
+                });
             }
+        }
+
+    };
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(C)]
+pub struct Args(u8, u8, u8);
+
+impl Args {
+    pub const ZERO: Self = Self(0, 0, 0);
+
+    #[inline]
+    pub const fn new_abc(a: u8, b: u8, c: u8) -> Self {
+        Self(a, b, c)
+    }
+
+    #[inline]
+    pub const fn new_ad(a: u8, d: u16) -> Self {
+        let [b, c] = d.to_le_bytes();
+        Self(a, b, c)
+    }
+
+    pub const fn a(&self) -> u8 {
+        self.0
+    }
+    #[inline]
+    pub const fn b(&self) -> u8 {
+        self.1
+    }
+    #[inline]
+    pub const fn c(&self) -> u8 {
+        self.2
+    }
+    #[inline]
+    pub const fn d(&self) -> u16 {
+        u16::from_le_bytes([self.1, self.2])
+    }
+    #[inline]
+    pub const fn set_a(&mut self, a: u8) {
+        self.0 = a;
+    }
+    #[inline]
+    pub const fn set_b(&mut self, b: u8) {
+        self.1 = b;
+    }
+    #[inline]
+    pub const fn set_c(&mut self, c: u8) {
+        self.2 = c;
+    }
+    #[inline]
+    pub const fn set_d(&mut self, d: u16) {
+        let [b, c] = d.to_le_bytes();
+        self.1 = b;
+        self.2 = c;
+    }
+}
+
+#[allow(unused)]
+pub trait OpArgs<const OP: u8> {
+    type Args: Copy;
+    fn get(&self) -> Self::Args;
+    fn from(tuple: Self::Args) -> Self;
+
+    fn set(&mut self, args: Self::Args)
+    where
+        Self: Sized,
+    {
+        *self = Self::from(args);
+    }
+
+    fn get_view_mut(&mut self) -> ArgsViewMut<'_, Self, OP>
+    where
+        Self: Sized,
+    {
+        ArgsViewMut::new(self)
+    }
+}
+
+pub struct ArgsViewMut<'a, Args, const OP: u8> where Args: OpArgs<OP> {
+    args: &'a mut Args,
+    pub mapped: <Args as OpArgs<OP>>::Args,
+}
+
+impl<'a, Args, const OP: u8> ArgsViewMut<'a, Args, OP> where Args: OpArgs<OP> {
+    pub fn new(args: &'a mut Args) -> Self {
+        let mapped = args.get();
+        Self { args, mapped }
+    }
+}
+
+impl<'a, Args, const OP: u8> Drop for ArgsViewMut<'a, Args, OP> where Args: OpArgs<OP> {
+    fn drop(&mut self) {
+        self.args.set(self.mapped);
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(C)]
+pub struct Op(pub OpCode, pub Args);
+
+const _: () = {
+    assert!(std::mem::size_of::<Op>() == 4);
+    assert!(std::mem::align_of::<Op>() == 1);
+};
+
+/// Macro to match an [`Op`] and destructure its arguments.
+/// 
+/// # Examples
+/// ```rust
+/// # use moonlift::opcode::{op, match_op};
+/// let mut op = op!(AddVV(1, 2, 3));
+/// match_op!{(&mut op) {
+///   AddVV (a, ref mut b, c) => {
+///     assert_eq!(a, 1);
+///     assert_eq!(*b, 2);
+///     assert_eq!(c, 3);
+///     // modify b
+///     *b += 10;
+/// #   assert_eq!(*b, 12);
+///   },
+///   SuvVV => {
+///     // Simple check for OpCode only
+///   },
+///   _ => panic!("unexpected opcode"),
+/// }};
+/// match_op!{(op) {
+///   AddVV (a, b, c) => {
+///     assert_eq!(a, 1);
+///     assert_eq!(b, 12);
+///     assert_eq!(c, 3);
+///   },
+///   _ => panic!("unexpected opcode"),
+/// }};
+/// # assert_eq!(op, op!(AddVV(1, 12, 3)));
+/// //Simple check if an Op is of a certain OpCode
+/// assert!(match_op!(op, AddVV));
+/// ```
+macro_rules! match_op {
+    (#getargs($src:expr ; $code:ident)) => {
+      {
+        let src: &crate::opcode::Args = &$src;
+        $crate::opcode::OpArgs::<{$crate::opcode::OpCode::$code as u8}>::get(src)
+      }
+    };
+    (#getargsviewmut($src:expr ; $code:ident)) => {
+      {
+        let src: &mut crate::opcode::Args = $src;
+        $crate::opcode::OpArgs::<{$crate::opcode::OpCode::$code as u8}>::get_view_mut(src)
+      }
+    };
+    (#ifrefmut ()                                 {$($ismut:tt)*} $(else {$($isnonmut:tt)*})?) => {
+      $( $($isnonmut)* )?
+    };
+    (#ifrefmut (ref mut $cur:pat, $($rest:tt)*) {$($ismut:tt)*} $(else {$($isnonmut:tt)*})?) => {
+      $($ismut)*
+    };
+    (#ifrefmut (ref $cur:pat, $($rest:tt)*)     {$($ismut:tt)*} $(else {$($isnonmut:tt)*})?) => {
+      match_op!(#ifrefmut ($($rest)*) { $($ismut)* });
+    };
+    (#ifrefmut ($cur:pat, $($rest:tt)*)         {$($ismut:tt)*} $(else {$($isnonmut:tt)*})?) => {
+      match_op!(#ifrefmut ($($rest)*) { $($ismut)* } $(else {$($isnonmut)*})?);
+    };
+
+    (op:expr, $opcode:ident) => {
+        match op.0 {
+            $crate::opcode::OpCode::$opcode => true,
+            _ => false,
+        }
+    };
+
+    (
+      ($op:expr) {
+        $($code:ident $(($($args:tt)*))? => $body:expr),*
+
+        $(, _ => $else:expr)?
+
+        $(,)?
+      }
+    ) => {
+        match $op {
+            $(
+              $crate::opcode::Op($crate::opcode::OpCode::$code, _args) => {
+                $(
+                    match_op!(#ifrefmut ($($args)*,) {
+                        let mut _mut_view = match_op!(#getargsviewmut(_args ; $code));
+                        let ($($args)*) = _mut_view.mapped;
+                    } else {
+                        let _tup = match_op!(#getargs(_args ; $code));
+                        let ($($args)*) = _tup;
+                    });
+                )?
+                { {$body} }
+              },
+            )*
+
+            $(_ => $else,)?
         }
     };
 }
 
-macro_rules! OP {
-    ($code:ident) => (crate::opcode::Op::$code(crate::opcode::AD{
-        a: 0,
-        d: 0,
-    }));
-    ($code:ident ($d:expr)) => (crate::opcode::Op::$code(crate::opcode::AD{
-        a: 0,
-        d: $d as u16,
-    }));
-    ($code:ident ($a:expr, $d:expr)) => (crate::opcode::Op::$code(crate::opcode::AD{
-        a: $a as u8,
-        d: $d as u16,
-    }));
-    ($code:ident ($a:expr, $b:expr, $c:expr)) => (crate::opcode::Op::$code(crate::opcode::ABC{
-        a: $a as u8,
-        b: $b as u8,
-        c: $c as u8,
-    }));
+/// Macro to create an [`Op`] from an [`OpCode`] with arguments.
+/// 
+/// # Examples
+/// ```rust,no_run
+/// # use moonlift::opcode::op;
+/// op![Mov(0, 1)] // OpCode::Mov with Args { a: 0, d: 1 }
+/// op![IsTC(0, 1)] // OpCode::IsTC with Args { a: 0, d: 1 }
+/// op![AddV(0, 1, 2)] // OpCode::AddV with Args { a: 0, b: 1, c: 2 }
+/// ```
+macro_rules! op {
+    (#setargs $arg:expr; $src:expr; $code:ident) => {
+      $crate::opcode::OpArgs::<{$crate::opcode::OpCode::$code as u8}>::set($src, $arg);
+    };
+    ($code:ident) => {
+      $crate::opcode::Op($crate::opcode::OpCode::$code, $crate::opcode::Args::ZERO)
+    };
+    ($code:ident ($($args:expr),* $(,)?)) => {
+      {
+        let mut args = $crate::opcode::Args::ZERO;
+        op!(#setargs ($($args,)*); &mut args; $code);
+        $crate::opcode::Op($crate::opcode::OpCode::$code, args)
+      }
+    };
+}
+
+#[cfg(test)]
+#[test]
+fn test_match_op() {
+    let mut op = op!(AddVV(1, 2, 3));
+    match_op!{(&mut op) {
+        AddVV (a, ref mut b, c) => {
+            assert_eq!(a, 1);
+            assert_eq!(*b, 2);
+            assert_eq!(c, 3);
+            // modify b
+            *b += 10;
+
+            assert_eq!(*b, 12);
+        },
+        _ => panic!("unexpected opcode"),
+    }};
+    match_op!{(op) {
+        AddVV(a, b, c) => {
+            assert_eq!(a, 1);
+            assert_eq!(b, 12);
+            assert_eq!(c, 3);
+        },
+        _ => panic!("unexpected opcode"),
+    }};
+    assert_eq!(op, op!(AddVV(1, 12, 3)));
 }
 
 struct VM {
-    pc: usize
+    pc: usize,
 }
 type Value = u32;
 impl VM {
-    fn get_var(&self, var: u16) -> Value {
+    fn get(&self, reg: u8) -> Value {
         todo!()
     }
-    fn get_str(&self, str: u16) -> Value {
+    fn set(&mut self, var: u8, val: Value) {
         todo!()
     }
-    fn get_tab(&self, tab: u16) -> Value {
+    fn get_uv(&self, uv: u8) -> Value {
         todo!()
     }
-    fn get_func(&self, tab: u16) -> Value {
+    fn set_uv(&mut self, uv: u8, val: u32) {
         todo!()
     }
-    fn get_num(&self, num: u16) -> Value {
+    fn get_table(&self, var: u8, key: Value) -> Value {
         todo!()
     }
-    fn get_uv(&self, uv: u16) -> Value {
+    fn set_table(&mut self, var: u8, key: Value, val: Value) {
         todo!()
     }
-    fn set_var(&mut self, var: u16, val: u32) {
+    fn get_const(&self, k: u16) -> Value {
         todo!()
     }
-    fn set_uv(&mut self, uv: u16, val: u32) {
+    fn get_func(&self, p: u16) -> Value {
         todo!()
     }
 }
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct ABC{
-    pub(crate) a: u8,
-    pub(crate) b: u8,
-    pub(crate) c: u8,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct AD{
-    pub(crate) a: u8,
-    pub(crate) d: u16,
-}
-
-/// variable slot number, used as a destination
-#[repr(transparent)]
-struct Dst(u8);
-/// variable slot number
-#[repr(transparent)]
-struct Var(u8);
-/// string constant, negated index into constant table
-#[repr(transparent)]
-struct Str(u16);
-/// number constant, index into constant table
-#[repr(transparent)]
-struct Num(u16);
-/// literal
-#[repr(transparent)]
-struct Lit(u16);
-/// signed literal
-#[repr(transparent)]
-struct LitS(i16);
-/// cdata constant, negated index into constant table
-#[repr(transparent)]
-struct Cdata(u16);
-/// branch target, relative to next instruction, biased with 0x8000
-#[repr(transparent)]
-struct Jump(u16);
-/// function prototype, negated index into constant table
-#[repr(transparent)]
-struct Func(u16);
-/// primitive type (0 = `nil`, 1 = `false`, 2 = `true`)
-#[repr(transparent)]
-struct Pri(u8);
 
 // The suffix(es) of the instruction name distinguish variants of the same basic instruction:
 //
@@ -251,85 +478,84 @@ struct Pri(u8);
 // - cdata: cdata constant, negated index into constant table
 // - jump: branch target, relative to next instruction, biased with 0x8000
 
-
-define_opcodes!{
+define_opcodes! {
     vm =>
 
     // Jump if A < D
     IsLt(a: var, d: var) {
-        if (a >= d) {
+        if vm.get(a) >= vm.get(d) {
             vm.pc += 1;
         }
     },
     // Jump if A ≥ D
     IsGe(a: var, d: var) {
-        if (a < d) {
+        if vm.get(a) < vm.get(d) {
             vm.pc += 1;
         }
     },
-    // Jump if A ≤ D 	
+    // Jump if A ≤ D
     IsLe(a: var, d: var) {
-        if (a > d) {
+        if vm.get(a) > vm.get(d) {
             vm.pc += 1;
         }
     },
     // Jump if A > D
     IsGt(a: var, d: var) {
-        if (a <= d) {
+        if vm.get(a) <= vm.get(d) {
             vm.pc += 1;
         }
     },
     // Jump if A = D
     IsEqV(a: var, d: var) {
-        if (a != d) {
+        if vm.get(a) != vm.get(d) {
             vm.pc += 1;
         }
     },
     // Jump if A ≠ D
     IsNeV(a: var, d: var) {
-        if (a == d) {
+        if vm.get(a) == vm.get(d) {
             vm.pc += 1;
         }
     },
     /*
     // Jump if A = D
     IsEqS(a: var, d: str) {
-        if (a != d) {
+        if vm.get(a) != vm.get_const(d) {
             vm.pc += 1;
         }
     },
     // Jump if A ≠ D
     IsNeS(a: var, d: str) {
-        if (a == d) {
+        if vm.get(a) == vm.get_const(d) {
             vm.pc += 1;
         }
     },
     // Jump if A = D
     IsEqN(a: var, d: num) {
-        if (a != d) {
+        if vm.get(a) != Value::from_num(d) {
             vm.pc += 1;
         }
     },
     // Jump if A ≠ D
     IsNeN(a: var, d: num) {
-        if (a == d) {
+        if vm.get(a) == Value::from_num(d) {
             vm.pc += 1;
         }
     },
     // Jump if A = D
     IsEqP(a: var, d: pri) {
-        if (a != d) {
+        if vm.get(a) != Value::from_pri(d) {
             vm.pc += 1;
         }
     },
     // Jump if A ≠ D
     IsNeP(a: var, d: pri) {
-        if (a == d) {
+        if vm.get(a) == Value::from_pri(d) {
             vm.pc += 1;
         }
     },
     */
-    
+
     // Copy D to A and jump, if D is true
     IsTC(a: dst, d: var) {
         // TODO
@@ -353,20 +579,21 @@ define_opcodes!{
 
     // Copy D to A
     Mov(a: dst, d: var) {
-        let a = d;
+        vm.set(a, vm.get(d));
     },
     // Set A to boolean not of D
     Not(a: dst, d: var) {
-        let a = !d;
+        vm.set(a, !vm.get(d));
     },
-    // Set A to -D (unary minus) 	
+    // Set A to -D (unary minus)
     UNM(a: dst, d: var) {
-        let a = (-(d as i32)) as u32;
+        // TODO
+        todo!();
     },
     // Set A to #D (object length)
     Len(a: dst, d: var) {
-      // TODO
-      let a = todo!();
+        // TODO
+        todo!();
     },
 
     /*
@@ -390,7 +617,7 @@ define_opcodes!{
     ModVN(a: dst, b: var, c: num) {
       let a = b % c;
     },
-    
+
     //A = C + B
     AddNV(a: dst, b: var, c: num) {
         let a = c + b;
@@ -477,13 +704,13 @@ define_opcodes!{
     KStr(a: dst, d: str) {
       let a = d;
     },
-    // Set A to cdata constant D
-    KCData(a: dst, d: cdata) {
-      // TODO
-      let a = todo!();
-    },
+    // // Set A to cdata constant D
+    // KCData(a: dst, d: cdata) {
+    //   // TODO
+    //   let a = todo!();
+    // },
     // Set A to 16 bit signed integer D
-    KShort(a: dst, d: lit) {
+    KShort(a: dst, d: lits) {
       let a = d;
     },
     // Set A to number constant D
@@ -544,11 +771,11 @@ define_opcodes!{
       // TODO
       let a = todo!();
     },
-    // Set A to duplicated template table D
-    TDup(a: dst, d: tab) {
-      // TODO
-      let a = todo!();
-    },
+    // // Set A to duplicated template table D
+    // TDup(a: dst, d: tab) {
+    //   // TODO
+    //   let a = todo!();
+    // },
     // A = G[D] (global get)
     GGet(a: dst, d: str) {
       // TODO
@@ -590,13 +817,13 @@ define_opcodes!{
       todo!();
     },
     // (A-1)[D], (A-1)[D+1], ... = A, A+1, ...
-    TSetM(a: base, d: num) { 
+    TSetM(a: base, d: num) {
       // TODO
       todo!();
     },
 
     // // Call: A, ..., A+B-2 = A(A+1, ..., A+C+MULTRES)
-    // CallM(a: base, b: lit, c: lit) { 
+    // CallM(a: base, b: lit, c: lit) {
     //   // TODO
     //     todo!();
     // },
@@ -606,7 +833,7 @@ define_opcodes!{
         todo!();
     },
     // // Tail-Call: `return` A(A+1, ..., A+D+MULTRES)
-    // CallMT(a: base, d: lit) { 
+    // CallMT(a: base, d: lit) {
     //   // TODO
     //     todo!();
     // },
@@ -617,7 +844,7 @@ define_opcodes!{
     },
 
     // // Return A, \..., A+D+MULTRES-1
-    // RetM(a: base, d: lit) { 
+    // RetM(a: base, d: lit) {
     //   // TODO
     //     todo!();
     // },
@@ -627,12 +854,12 @@ define_opcodes!{
         todo!();
     },
     // Return
-    Ret0(a: rbase, d: lit) { 
+    Ret0(a: rbase, d: lit) {
       // TODO
       todo!();
     },
     // Return A
-    Ret1(a: rbase, d: lit) { 
+    Ret1(a: rbase, d: lit) {
       // TODO
         todo!();
     },
@@ -661,13 +888,14 @@ define_opcodes!{
     // Vararg: A, ..., A+B-2 = ...
     VArg(a: base, b: lit, c: lit) {
       todo!();
-    }, 
+    },
 }
 
 impl OpCode {
-  pub fn is_cond(self) -> bool {
-      matches!(self,
-        Self::IsLt |
+    pub fn is_cond(self) -> bool {
+        matches!(
+            self,
+            Self::IsLt |
         Self::IsGe |
         Self::IsLe |
         Self::IsGt |
@@ -683,65 +911,96 @@ impl OpCode {
         Self::IsFC |
         Self::IsT |
         Self::IsF
-      )
-  }
+        )
+    }
 
-  pub fn negated(self) -> Option<Self> {
-      match self {
-          Self::IsLt => Some(Self::IsGe),
-          Self::IsGe => Some(Self::IsLt),
-          Self::IsLe => Some(Self::IsGt),
-          Self::IsGt => Some(Self::IsLe),
-          Self::IsEqV => Some(Self::IsNeV),
-          Self::IsNeV => Some(Self::IsEqV),
-          // Self::IsEqS => Some(Self::IsNeS),
-          // Self::IsNeS => Some(Self::IsEqS),
-          // Self::IsEqN => Some(Self::IsNeN),
-          // Self::IsNeN => Some(Self::IsEqN),
-          // Self::IsEqP => Some(Self::IsNeP),
-          // Self::IsNeP => Some(Self::IsEqP),
-          Self::IsTC => Some(Self::IsF),
-          Self::IsFC => Some(Self::IsT),
-          Self::IsT => Some(Self::IsF),
-          Self::IsF => Some(Self::IsT),
-          _ => None,
-      }
-  }
+    pub fn negated(self) -> Option<Self> {
+        match self {
+            Self::IsLt => Some(Self::IsGe),
+            Self::IsGe => Some(Self::IsLt),
+            Self::IsLe => Some(Self::IsGt),
+            Self::IsGt => Some(Self::IsLe),
+            Self::IsEqV => Some(Self::IsNeV),
+            Self::IsNeV => Some(Self::IsEqV),
+            // Self::IsEqS => Some(Self::IsNeS),
+            // Self::IsNeS => Some(Self::IsEqS),
+            // Self::IsEqN => Some(Self::IsNeN),
+            // Self::IsNeN => Some(Self::IsEqN),
+            // Self::IsEqP => Some(Self::IsNeP),
+            // Self::IsNeP => Some(Self::IsEqP),
+            Self::IsTC => Some(Self::IsF),
+            Self::IsFC => Some(Self::IsT),
+            Self::IsT => Some(Self::IsF),
+            Self::IsF => Some(Self::IsT),
+            _ => None,
+        }
+    }
 }
 
 impl Op {
-  #[inline]
-  pub fn opcode(&self) -> OpCode {
-      // SAFETY: Because `Self` is marked `repr(u8)`, its layout is a `repr(C)` `union`
-      // between `repr(C)` structs, each of which has the `u8` discriminant as its first
-      // field, so we can read the discriminant without offsetting the pointer.
-      // Also the discriminant value is the same as the `OpCode` value.
-      unsafe { *<*const _>::from(self).cast::<OpCode>() }
-  }
+    #[inline]
+    pub const fn opcode(&self) -> OpCode {
+        self.0
+    }
 
-  #[inline]
-  pub fn set_opcode(&mut self, new_opcode: OpCode) {
-      // SAFETY: Because `Self` is marked `repr(u8)`, its layout is a `repr(C)` `union`
-      // between `repr(C)` structs, each of which has the `u8` discriminant as its first
-      // field, so we can read the discriminant without offsetting the pointer.
-      // Also the discriminant value is the same as the `OpCode` value.
-      unsafe {
-        let mut_opcode = <*mut _>::from(self).cast::<OpCode>();
-        mut_opcode.write(new_opcode);
-      }
-  }
-  
-  #[inline]
-  pub fn is_condition(&self) -> bool {
-      self.opcode().is_cond()
-  }
+    #[inline]
+    pub const fn set_opcode(&mut self, new_opcode: OpCode) {
+        self.0 = new_opcode;
+    }
 
-  #[inline]
-  pub fn negate(&mut self) -> bool {
-      let Some(new_opcode) = self.opcode().negated() else {
-          return false;
-      };
-      self.set_opcode(new_opcode);
-      true
-  }
+    #[inline]
+    pub const fn args(&self) -> Args {
+        self.1
+    }
+
+    #[inline]
+    pub const fn args_mut(&mut self) -> &mut Args {
+        &mut self.1
+    }
+
+    #[inline]
+    pub const fn set_a_dst(
+        &mut self,
+        dst: u8,
+    ) -> Result<(), crate::codegen_state::CodeGenerationError> {
+        if !self.opcode().is_a_dst() {
+            return Err(crate::codegen_state::CodeGenerationError::InvalidOpCode(
+                self.opcode(),
+            ));
+        }
+        self.1.set_a(dst);
+        Ok(())
+    }
+
+    #[inline]
+    pub const fn set_base_num(
+        &mut self,
+        num: u8,
+    ) -> Result<u8, crate::codegen_state::CodeGenerationError> {
+        if !self.opcode().is_base_and_num() {
+            return Err(crate::codegen_state::CodeGenerationError::InvalidOpCode(
+                self.opcode(),
+            ));
+        }
+        if self.opcode().is_ad() {
+            self.1.set_d(num as u16);
+        } else {
+            self.1.set_c(num);
+        }
+        Ok(self.1.a())
+    }
+
+    #[inline]
+    pub fn is_condition(&self) -> bool {
+        self.opcode().is_cond()
+    }
+
+    #[inline]
+    pub fn negate(&mut self) -> bool {
+        let Some(new_opcode) = self.opcode().negated() else {
+            return false;
+        };
+        self.set_opcode(new_opcode);
+        true
+    }
 }
