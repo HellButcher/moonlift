@@ -71,12 +71,12 @@ pub struct Bytecode {
 
 impl Bytecode {
     pub fn parse_bytes(bytes: impl AsRef<[u8]>) -> Result<Self, ErrorWithPosition<Infallible, CodeGenerationError>> {
-        let proto = BytecodeGenerator::new().parse_bytes(bytes)?;
+        let proto = BytecodeGenerator::new().parse_bytes_with_debug(bytes)?;
         Ok(Self::from_proto(proto))
     }
 
     pub fn parse(read: impl io::Read) -> Result<Self, ErrorWithPosition<io::Error, CodeGenerationError>> {
-        let proto = BytecodeGenerator::new().parse_read(read)?;
+        let proto = BytecodeGenerator::new().parse_read_with_debug(read)?;
         Ok(Self::from_proto(proto))
     }
 

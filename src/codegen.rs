@@ -8,21 +8,6 @@ use crate::{
     }, parser::{ParseVisitor, ParseVisitorOutput}
 };
 
-macro_rules! panic_with_dump {
-    ($self:ident, $($args:tt)*) => {
-        eprintln!("DUMP: {:#?}", $self);
-        panic!($($args)*);
-    };
-}
-
-
-macro_rules! todo_with_dump {
-    ($self:ident, $($args:tt)*) => {
-        eprintln!("DUMP: {:#?}", $self);
-        todo!($($args)*);
-    };
-}
-
 impl BytecodeGenerator {
     fn assign_lvalue(&mut self, lvalue: Expr, mut rvalue: Expr) {
         if lvalue.is_void() || rvalue.is_void() || self.dead {
@@ -171,7 +156,7 @@ impl ParseVisitor for BytecodeGenerator {
                         if self.negate_jmp_ctrl(pc) {
                             return expr;
                         } else {
-                            panic_with_dump!(self, "Failed to negate non-conditional jump condition");
+                            panic!("Failed to negate non-conditional jump condition");
                         }
                     }
                 }
@@ -272,7 +257,7 @@ impl ParseVisitor for BytecodeGenerator {
         if op == InfixOp::Concat {
             // Ensure lhs is in the next register
             let ExprValue::NonReloc(lhs_reg) = lhs.value else {
-                panic_with_dump!(self, "Expected lhs to be in next register");
+                panic!("Expected lhs to be in next register");
             };
             // Ensure rhs is in the next register
             let rhs_reg = self.expr_to_next_reg(&mut rhs).unwrap();
@@ -542,14 +527,14 @@ impl ParseVisitor for BytecodeGenerator {
     fn stmt_label(&mut self, label: String) {
         // TODO: dead?
         self.dead = false;
-        todo_with_dump!(self, "Labels not implemented");
+        todo!("Labels not implemented");
     }
 
     fn stmt_goto(&mut self, label: String) {
         if self.dead {
             return;
         }
-        todo_with_dump!(self, "GoTo not implemented");
+        todo!("GoTo not implemented");
     }
 
     fn stmt_if(&mut self, mut condition: Self::Expr) {
@@ -614,14 +599,14 @@ impl ParseVisitor for BytecodeGenerator {
         if self.dead {
             return;
         }
-        todo_with_dump!(self, "For-Loop not implemented");
+        todo!("For-Loop not implemented");
     }
 
     fn stmt_loop_foreach(&mut self, vars: Vec<String>, exprs: Vec<Self::Expr>) {
         if self.dead {
             return;
         }
-        todo_with_dump!(self, "ForEach-Loop not implemented");
+        todo!("ForEach-Loop not implemented");
     }
 
     fn stmt_endloop(&mut self) {
@@ -710,9 +695,9 @@ impl ParseVisitor for BytecodeGenerator {
             }
         } else if exprs.len() == 1 {
             // TODO: unpack variadic
-            todo_with_dump!(self, "Unpacking variadic assignments not implemented");
+            todo!("Unpacking variadic assignments not implemented");
         } else if !exprs.is_empty() {
-            panic_with_dump!(self, "Mismatched number of local variables and expressions");
+            panic!("Mismatched number of local variables and expressions");
         }
     }
 

@@ -1,4 +1,4 @@
-use std::{convert::Infallible, io};
+use std::{convert::Infallible, fmt::Debug, io};
 
 use crate::{
     Error, ErrorWithPosition, ast, lexer::{Lexer, LexerError, Position, Token}, source::Source
@@ -92,6 +92,28 @@ pub trait ParseVisitor {
     fn stmt_expression(&mut self, expr: Self::Expr);
 }
 
+#[cfg(debug_assertions)]
+fn print_position_when_unwinding<S,V,F,R>(parser: &mut Parser<S,V>, f: F) -> R
+    where S: Source, V: Debug + ?Sized, F: FnOnce(&mut Parser<S,V>) -> R + std::panic::UnwindSafe
+{
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(parser))) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("Panic while parsing position {}", parser.lex.position());
+            eprintln!("Lookahead: {:#?}", parser.lookahead);
+            eprintln!("Visitor state: {:#?}", parser.visitor);
+            std::panic::resume_unwind(e);
+        }
+    }
+}
+
+#[cfg(not(debug_assertions))]
+fn print_position_when_unwinding<S,V,F,R>(parser: &mut Parser<S,V>, f: F) -> R
+    where S: Source, V: ?Sized, F: FnOnce(&mut Parser<S,V>) -> R + std::panic::UnwindSafe
+{
+    f(parser)
+}
+
 pub trait ParseVisitorOutput: ParseVisitor {
     type Output;
     fn start(&mut self) -> Result<(), Self::Error>;
@@ -107,6 +129,22 @@ pub trait ParseVisitorOutput: ParseVisitor {
         let mut lexer = Lexer::read(read);
         let mut parser = Parser::new(&mut lexer, self);
         parser.parse_with_err_pos()
+    }
+
+    fn parse_bytes_with_debug(&mut self, bytes: impl AsRef<[u8]>) -> Result<Self::Output, ErrorWithPosition<Infallible, Self::Error>> where Self: Debug {
+        let mut lexer = Lexer::from_bytes(bytes);
+        let mut parser = Parser::new(&mut lexer, self);
+        print_position_when_unwinding(&mut parser, |parser| {
+            parser.parse_with_err_pos()
+        })
+    }
+
+    fn parse_read_with_debug(&mut self, read: impl io::Read) -> Result<Self::Output, ErrorWithPosition<io::Error,Self::Error>> where Self: Debug {
+        let mut lexer = Lexer::read(read);
+        let mut parser = Parser::new(&mut lexer, self);
+        print_position_when_unwinding(&mut parser, |parser| {
+            parser.parse_with_err_pos()
+        })
     }
 }
 
