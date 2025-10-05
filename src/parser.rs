@@ -1,7 +1,7 @@
 use std::{convert::Infallible, io};
 
 use crate::{
-    Error, ErrorWithPosition, ast::*, lexer::{Lexer, LexerError, Position, Source, Token}
+    Error, ErrorWithPosition, ast, lexer::{Lexer, LexerError, Position, Token}, source::Source
 };
 
 #[derive(thiserror::Error, Debug, PartialEq)]
@@ -37,7 +37,7 @@ pub trait ParseVisitor {
     fn enter_expr(&mut self) {}
     fn leave_expr(&mut self) {}
 
-    fn expr_number(&mut self, n: Number) -> Self::Expr;
+    fn expr_number(&mut self, n: ast::Number) -> Self::Expr;
     fn expr_string(&mut self, s: Box<[u8]>) -> Self::Expr;
     fn expr_boolean(&mut self, b: bool) -> Self::Expr;
     fn expr_nil(&mut self) -> Self::Expr;
@@ -49,11 +49,11 @@ pub trait ParseVisitor {
     fn expr_self(&mut self, prefix: Self::Expr, method: String) -> Self::Expr;
     fn expr_call(&mut self, prefix: Self::Expr, args: Vec<Self::Expr>, is_method: bool) -> Self::Expr;
 
-    fn expr_prefix(&mut self, op: UnaryOp, expr: Self::Expr) -> Self::Expr;
+    fn expr_prefix(&mut self, op: ast::UnaryOp, expr: Self::Expr) -> Self::Expr;
     // infix first emitted as `let tmp = expr_infix(lhs, op);`
     // then rhs is emitted as `let expr = expr_infix(tmp, op, rhs);`
-    fn expr_infix(&mut self, lhs: Self::Expr, op: InfixOp) -> Self::Expr;
-    fn expr_postfix(&mut self, infix: Self::Expr, op: InfixOp, rhs: Self::Expr) -> Self::Expr;
+    fn expr_infix(&mut self, lhs: Self::Expr, op: ast::InfixOp) -> Self::Expr;
+    fn expr_postfix(&mut self, infix: Self::Expr, op: ast::InfixOp, rhs: Self::Expr) -> Self::Expr;
 
     fn expr_table_begin(&mut self);
     fn expr_table_field_index(&mut self, key: Self::Expr, value: Self::Expr);
@@ -86,7 +86,7 @@ pub trait ParseVisitor {
 
     fn stmt_locals(&mut self, names: Vec<(String,String)>, exprs: Vec<Self::Expr>);
     fn stmt_return(&mut self, exprs: Vec<Self::Expr>);
-    fn stmt_function(&mut self, name: FuncName, proto: Self::Proto);
+    fn stmt_function(&mut self, name: ast::FuncName, proto: Self::Proto);
     fn stmt_local_function(&mut self, name: String, proto: Self::Proto);
     fn stmt_assignment(&mut self, vars: Vec<Self::Expr>, exprs: Vec<Self::Expr>);
     fn stmt_expression(&mut self, expr: Self::Expr);
@@ -225,7 +225,7 @@ impl<'a, S: Source, V: ?Sized> Parser<'a, S, V> {
     }
 
     #[inline]
-    fn expect_number<E>(&mut self) -> Result<Number, Error<S::Error, E>> {
+    fn expect_number<E>(&mut self) -> Result<ast::Number, Error<S::Error, E>> {
         match self.next_token()? {
             Token::Number(n) => Ok(n),
             e => Err(Error::ParseError(ParseError::UnexpectedToken {
@@ -697,7 +697,7 @@ impl<'a, S: Source, V: ParseVisitor + ?Sized> Parser<'a, S, V> {
                 | Token::Number(_)
                 | Token::String(_)
                 | Token::Name(_)
-        ) || matches!(token, Token::Keyword(s) | Token::Symbol(s) if UnaryOp::from_str(s).is_some())
+        ) || matches!(token, Token::Keyword(s) | Token::Symbol(s) if ast::UnaryOp::from_str(s).is_some())
     }
 
     /// Parses a Lua expression with operator precedence.
@@ -714,7 +714,7 @@ impl<'a, S: Source, V: ParseVisitor + ?Sized> Parser<'a, S, V> {
 
         let mut e = if let Some(op) = self.try_unary_op()? {
             // exp ::= unop exp
-            let exp = self.parse_expression_with_precedence(UnaryOp::PRECEDENCE_LEVEL)?;
+            let exp = self.parse_expression_with_precedence(ast::UnaryOp::PRECEDENCE_LEVEL)?;
             self.visitor.expr_prefix(op, exp)
         } else {
             // exp ::= ... (see `parse_simpleexpr`)
@@ -739,10 +739,10 @@ impl<'a, S: Source, V: ParseVisitor + ?Sized> Parser<'a, S, V> {
     fn try_infix_op(
         &mut self,
         base_precedence: u8,
-    ) -> Result<Option<(InfixOp, u8)>, LexerError<S::Error>> {
+    ) -> Result<Option<(ast::InfixOp, u8)>, LexerError<S::Error>> {
         if let Token::Symbol(s) | Token::Keyword(s) = self.peek_token()? {
             let s = *s;
-            if let Some(op) = InfixOp::from_str(s) {
+            if let Some(op) = ast::InfixOp::from_str(s) {
                 let precedence = op.precedence_level();
                 if precedence > base_precedence {
                     self.pop_token();
@@ -753,10 +753,10 @@ impl<'a, S: Source, V: ParseVisitor + ?Sized> Parser<'a, S, V> {
         Ok(None)
     }
 
-    fn try_unary_op(&mut self) -> Result<Option<UnaryOp>, LexerError<S::Error>> {
+    fn try_unary_op(&mut self) -> Result<Option<ast::UnaryOp>, LexerError<S::Error>> {
         if let Token::Symbol(s) | Token::Keyword(s) = self.peek_token()? {
             let s = *s;
-            if let Some(op) = UnaryOp::from_str(s) {
+            if let Some(op) = ast::UnaryOp::from_str(s) {
                 self.pop_token();
                 return Ok(Some(op));
             }
@@ -1052,7 +1052,7 @@ impl<'a, S: Source, V: ParseVisitor + ?Sized> Parser<'a, S, V> {
     /// ```ebnf
     /// funcname ::= Name {'.' Name} [':' Name]
     /// ```
-    fn parse_funcname(&mut self) -> Result<FuncName, Error<S::Error, V::Error>> {
+    fn parse_funcname(&mut self) -> Result<ast::FuncName, Error<S::Error, V::Error>> {
         let mut qname = vec![self.expect_name()?];
         // {'.' Name}
         while self.try_symbol(".")? {
@@ -1063,7 +1063,7 @@ impl<'a, S: Source, V: ParseVisitor + ?Sized> Parser<'a, S, V> {
         if method {
             qname.push(self.expect_name()?);
         }
-        Ok(FuncName { qname, method })
+        Ok(ast::FuncName { qname, method })
     }
 
     /// Parses a Lua parlist (function parameters).
@@ -1073,14 +1073,14 @@ impl<'a, S: Source, V: ParseVisitor + ?Sized> Parser<'a, S, V> {
     /// parlist ::= namelist [',' '...'] | '...'
     /// namelist ::= Name {',' Name}
     /// ```
-    fn parse_parlist(&mut self) -> Result<Params, Error<S::Error, V::Error>> {
+    fn parse_parlist(&mut self) -> Result<ast::Params, Error<S::Error, V::Error>> {
         let mut names = Vec::new();
         loop {
             match self.peek_token()? {
                 // parlist ::= '...'
                 Token::Symbol("...") => {
                     self.pop_token();
-                    return Ok(Params {
+                    return Ok(ast::Params {
                         names,
                         variadic: true,
                     });
@@ -1091,7 +1091,7 @@ impl<'a, S: Source, V: ParseVisitor + ?Sized> Parser<'a, S, V> {
                     names.push(name);
                     // {',' Name}
                     if !self.try_symbol(",")? {
-                        return Ok(Params {
+                        return Ok(ast::Params {
                             names,
                             variadic: false,
                         });
@@ -1099,7 +1099,7 @@ impl<'a, S: Source, V: ParseVisitor + ?Sized> Parser<'a, S, V> {
                 }
                 // end of parlist
                 _ => {
-                    return Ok(Params {
+                    return Ok(ast::Params {
                         names,
                         variadic: false,
                     });
@@ -1150,7 +1150,7 @@ impl<'a, S: Source, V: ParseVisitor + ?Sized> Parser<'a, S, V> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{lexer::Lexer, parser_ast::AstVisitor};
+    use crate::{ast::*, lexer::Lexer, parser_ast::AstVisitor};
 
     #[test]
     fn expr1() {

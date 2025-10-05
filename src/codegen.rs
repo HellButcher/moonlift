@@ -5,8 +5,23 @@ use core::panic;
 use crate::{
     ast::*, codegen_state::{
         BytecodeGenerator, CodeGenerationError, ConstValue, DischargedRegOrJmp, Expr, ExprValue, JumpList, Proto, ProtoGenerator
-    }, opcode::Op, parser::{ParseVisitor, ParseVisitorOutput}
+    }, parser::{ParseVisitor, ParseVisitorOutput}
 };
+
+macro_rules! panic_with_dump {
+    ($self:ident, $($args:tt)*) => {
+        eprintln!("DUMP: {:#?}", $self);
+        panic!($($args)*);
+    };
+}
+
+
+macro_rules! todo_with_dump {
+    ($self:ident, $($args:tt)*) => {
+        eprintln!("DUMP: {:#?}", $self);
+        todo!($($args)*);
+    };
+}
 
 impl BytecodeGenerator {
     fn assign_lvalue(&mut self, lvalue: Expr, mut rvalue: Expr) {
@@ -68,9 +83,11 @@ impl ParseVisitor for BytecodeGenerator {
     type Proto = Proto;
 
     fn enter_scope(&mut self) {
+        self.frame.enter_scope();
     }
 
     fn leave_scope(&mut self) {
+        self.frame.leave_scope();
     }
 
     fn enter_expr(&mut self) {
@@ -154,7 +171,7 @@ impl ParseVisitor for BytecodeGenerator {
                         if self.negate_jmp_ctrl(pc) {
                             return expr;
                         } else {
-                            panic!("Failed to negate non-conditional jump condition");
+                            panic_with_dump!(self, "Failed to negate non-conditional jump condition");
                         }
                     }
                 }
@@ -255,7 +272,7 @@ impl ParseVisitor for BytecodeGenerator {
         if op == InfixOp::Concat {
             // Ensure lhs is in the next register
             let ExprValue::NonReloc(lhs_reg) = lhs.value else {
-                panic!("Expected lhs to be in next register");
+                panic_with_dump!(self, "Expected lhs to be in next register");
             };
             // Ensure rhs is in the next register
             let rhs_reg = self.expr_to_next_reg(&mut rhs).unwrap();
@@ -330,6 +347,7 @@ impl ParseVisitor for BytecodeGenerator {
             // it's an upvalue
             Expr::new(ExprValue::Upval(uv_idx as u8))
         } else {
+            // TODO: check parent protos for creating upvalues
             // It's a global variable
             let key_const = self
                 .constants
@@ -524,49 +542,52 @@ impl ParseVisitor for BytecodeGenerator {
     fn stmt_label(&mut self, label: String) {
         // TODO: dead?
         self.dead = false;
-        todo!()
+        todo_with_dump!(self, "Labels not implemented");
     }
 
     fn stmt_goto(&mut self, label: String) {
         if self.dead {
             return;
         }
-        todo!()
+        todo_with_dump!(self, "GoTo not implemented");
     }
 
     fn stmt_if(&mut self, mut condition: Self::Expr) {
         if self.dead {
+            self.ifjumps.push((true, true, JumpList::NO_JUMP));
             return;
         }
         // TODO: handle optimized case: `if x then break`
         let else_jump = self.go_if_true(&mut condition);
-        self.ifjumps.push(else_jump);
+        self.ifjumps.push((false, false, else_jump));
     }
 
     fn stmt_else(&mut self) {
-        if self.dead {
+        let (was_dead, _, if_expr_jumps) = self.ifjumps.pop().expect("Not inside if");
+        let if_was_dead = self.dead;
+        self.dead = was_dead;
+        if was_dead {
+            self.ifjumps.push((true, true, JumpList::NO_JUMP));
             return;
         }
         let jump_end = JumpList(self.emit_jmp_placeholder());
-        let if_expr_jumps = self.ifjumps.pop().expect("Not inside if");
-        self.ifjumps.push(jump_end);
+        self.ifjumps.push((false, if_was_dead, jump_end));
         self.patch_jmp_list_here(if_expr_jumps);
     }
 
     fn stmt_endif(&mut self) {
+        let (was_dead, iforelse_was_dead, if_expr_jumps) = self.ifjumps.pop().expect("Not inside if");
+        self.dead = was_dead || self.dead && iforelse_was_dead;
         if self.dead {
             return;
         }
-        let jump_end = self.ifjumps.pop().expect("not inside if");
-        self.patch_jmp_list_here(jump_end);
+        self.patch_jmp_list_here(if_expr_jumps);
     }
 
     fn stmt_loop(&mut self) {
-        if self.dead {
-            return;
-        }
+        let dead = self.dead;
         let pc = self.pc();
-        self.loops.push((pc, JumpList::NO_JUMP));
+        self.loops.push((dead, pc, JumpList::NO_JUMP));
     }
 
     fn stmt_loop_while(&mut self, mut condition: Self::Expr) {
@@ -574,16 +595,16 @@ impl ParseVisitor for BytecodeGenerator {
             return;
         }
         let end_jump = self.go_if_true(&mut condition);
-        let (_loop_start, mut end_jumps) = *self.loops.last().expect("not inside loop");
+        let (_was_dead, _loop_start, mut end_jumps) = *self.loops.last().expect("not inside loop");
         self.concat_jump_list(&mut end_jumps, end_jump);
-        self.loops.last_mut().unwrap().1 = end_jumps;
+        self.loops.last_mut().unwrap().2 = end_jumps;
     }
 
     fn stmt_loop_repeat_until(&mut self, mut condition: Self::Expr) {
         if self.dead {
             return;
         }
-        let (loop_start, end_jumps) = *self.loops.last().expect("not inside loop");
+        let (_was_dead, loop_start, end_jumps) = *self.loops.last().expect("not inside loop");
         debug_assert!(!end_jumps.has_jumps());
         let continue_jump = self.go_if_false(&mut condition);
         self.patch_jmp_list(continue_jump, loop_start);
@@ -593,21 +614,22 @@ impl ParseVisitor for BytecodeGenerator {
         if self.dead {
             return;
         }
-        todo!()
+        todo_with_dump!(self, "For-Loop not implemented");
     }
 
     fn stmt_loop_foreach(&mut self, vars: Vec<String>, exprs: Vec<Self::Expr>) {
         if self.dead {
             return;
         }
-        todo!()
+        todo_with_dump!(self, "ForEach-Loop not implemented");
     }
 
     fn stmt_endloop(&mut self) {
+        let (was_dead, _loop_start, end_jumps) = self.loops.pop().expect("not inside loop");
+        self.dead = was_dead;
         if self.dead {
             return;
         }
-        let (_loop_start, end_jumps) = self.loops.pop().expect("not inside loop");
         self.patch_jmp_list_here(end_jumps);
     }
 
@@ -653,7 +675,7 @@ impl ParseVisitor for BytecodeGenerator {
             self.emit(op![Ret(first_reg, num_rets as u16)]);
             self.frame.free_range(regs);
         }
-        self.dead = true; // TODO: reset dead back to false after block
+        self.dead = true;
     }
 
     fn stmt_function(&mut self, mut name: FuncName, proto: Self::Proto) {
@@ -688,9 +710,9 @@ impl ParseVisitor for BytecodeGenerator {
             }
         } else if exprs.len() == 1 {
             // TODO: unpack variadic
-            todo!()
+            todo_with_dump!(self, "Unpacking variadic assignments not implemented");
         } else if !exprs.is_empty() {
-            panic!("Mismatched number of local variables and expressions");
+            panic_with_dump!(self, "Mismatched number of local variables and expressions");
         }
     }
 
@@ -702,7 +724,7 @@ impl ParseVisitor for BytecodeGenerator {
         self.expr_free(&call.value);
     }
 
-    fn enter_function(&mut self, is_method: bool, is_vararg: bool, args: Vec<String>) {
+    fn enter_function(&mut self, _is_method: bool, is_vararg: bool, args: Vec<String>) {
         self.protos.push(ProtoGenerator::new(is_vararg, args));
     }
 

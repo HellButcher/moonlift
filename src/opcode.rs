@@ -1,3 +1,5 @@
+use std::fmt;
+
 
 macro_rules! __mkop {
     (is_a_dst_impl [dst $(, $x:ident)*]) => (true);
@@ -168,6 +170,19 @@ macro_rules! define_opcodes {
             }
         }
 
+        impl fmt::Debug for Op {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                match self.0 {
+                    $(
+                        OpCode::$id => {
+                            let tup = OpArgs::<{OpCode::$id as u8}>::get(&self.1);
+                            write!(f, "{}{:?}", stringify!($id), tup)
+                        },
+                    )*
+                }
+            }
+        }
+
     };
 }
 
@@ -263,7 +278,7 @@ impl<'a, Args, const OP: u8> Drop for ArgsViewMut<'a, Args, OP> where Args: OpAr
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 #[repr(C)]
 pub struct Op(pub OpCode, pub Args);
 

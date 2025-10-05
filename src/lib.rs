@@ -15,10 +15,11 @@ mod codegen_state;
 //mod ffi;
 //mod ffi_impl;
 pub mod jit;
+mod source;
 mod lexer;
 mod parser;
 mod parser_ast;
-
+mod bytecode_ser;
 
 #[derive(thiserror::Error, Debug, PartialEq)]
 pub enum Error<IoError = Infallible, VisitorError = Infallible> {
@@ -30,7 +31,6 @@ pub enum Error<IoError = Infallible, VisitorError = Infallible> {
 
     #[error(transparent)]
     CodegenError(VisitorError),
-
 
     #[error(transparent)]
     ModuleError(#[from] ModuleError),
@@ -64,6 +64,7 @@ impl Ast {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct Bytecode {
     root: Proto,
 }

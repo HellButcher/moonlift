@@ -3,6 +3,7 @@ use std::collections::HashMap;
 // Direct Bytecode Parser Integration für Moonlift
 
 use std::collections::hash_map::Entry;
+use std::fmt;
 use std::hash::Hash;
 use std::ops::{Add, BitAnd, BitOr, BitXor, Deref, DerefMut, Div, Mul, Neg, Not, Rem, Shl, Shr, Sub};
 use std::{cell::Cell, ops::Range};
@@ -24,12 +25,28 @@ pub enum CodeGenerationError {
 
 use std::pin::Pin;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub enum Constant {
     Float(f64),
     Integer(i64),
     String(Pin<Box<[u8]>>),
     // ggf. weitere Typen
+}
+
+impl fmt::Debug for Constant {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Constant::Float(v) => write!(f, "Float({})", v),
+            Constant::Integer(v) => write!(f, "Integer({})", v),
+            Constant::String(s) => {
+                if let Ok(s) = std::str::from_utf8(s) {
+                    write!(f, "String({:?})", s)
+                } else {
+                    write!(f, "String({:?})", s)
+                }
+            }
+        }
+    }
 }
 
 struct StrPtr(*const [u8]);
@@ -44,7 +61,7 @@ impl Eq for StrPtr {}
 impl Hash for StrPtr {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         let this = unsafe { self.0.as_ref().unwrap() };
-        this.hash(state);
+        state.write(this);
     }
 }
 
@@ -63,13 +80,13 @@ impl<'a> ConstantPool {
         }
     }
 
-    pub fn into(self) -> Vec<Constant> {
-        self.constants
+    pub fn into_boxed_slice(self) -> Box<[Constant]> {
+        self.constants.into_boxed_slice()
     }
 
-    pub fn from(constants: Vec<Constant>) -> Self {
+    pub fn from_boxed_slice(constants: Box<[Constant]>) -> Self {
         let mut result = Self::new();
-        result.constants = constants;
+        result.constants = constants.into_vec();
         for (idx, constant) in result.constants.iter().enumerate() {
             let idx = idx as u16;
             match constant {
@@ -112,7 +129,7 @@ impl<'a> ConstantPool {
         match self.string_map.entry(ptr) {
             Entry::Occupied(o) => Ok(*o.get()),
             Entry::Vacant(v) => {
-                self.constants.push(Constant::String(pin.clone()));
+                self.constants.push(Constant::String(pin));
                 v.insert(idx);
                 Ok(idx)
             }
@@ -149,61 +166,64 @@ impl<'a> ConstantPool {
     }
 }
 
+impl fmt::Debug for ConstantPool {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_list().entries(self.constants.iter()).finish()
+    }
+}
+
 pub type Reg = u8;
 pub const NO_REG: Reg = !0;
 
+#[derive(Debug)]
 /// Hilfsstruktur für lokale Variablen und temporäre Werte
-pub struct Frame<'a> {
-    next_slot: u8,                               // nächster freier Slot
-    max_num_slots: Cell<u8>,                     // höchster benutzter Slot (für locals_count)
-    vars: std::collections::HashMap<String, u8>, // Name -> Slot
-    parent: Option<&'a Frame<'a>>,
+pub struct Frame {
+    next_slot: u8,           // nächster freier Slot
+    max_num_slots: u8,       // höchster benutzter Slot (für locals_count)
+    vars: Vec<(String, u8)>, // (Name,Slot)
+    scopes: Vec<u8>,         // next_slot at scope start
 }
 
-impl Frame<'static> {
-    pub fn new() -> Self {
+impl Frame {
+    pub const fn new() -> Self {
         Self {
             next_slot: 0,
-            max_num_slots: Cell::new(0),
-            vars: std::collections::HashMap::new(),
-            parent: None,
-        }
-    }
-}
-impl<'a> Frame<'a> {
-    pub fn nested<'b>(parent: &'a Frame<'b>) -> Self {
-        Self {
-            next_slot: parent.next_slot,
-            max_num_slots: Cell::new(parent.next_slot),
-            vars: std::collections::HashMap::new(),
-            parent: Some(parent),
+            max_num_slots: 0,
+            vars: Vec::new(),
+            scopes: Vec::new(),
         }
     }
 
-    fn update_max_num_slots(&self, num_slots: u8) {
-        if num_slots > self.max_num_slots.get() {
-            self.max_num_slots.set(num_slots);
-            if let Some(parent) = self.parent {
-                parent.update_max_num_slots(num_slots);
+    pub fn enter_scope(&mut self) {
+        self.scopes.push(self.next_slot);
+    }
+
+    pub fn leave_scope(&mut self) {
+        let scope_start = self.scopes.pop().expect("no scope to leave");
+        self.next_slot = scope_start;
+        while let Some((_, slot)) = self.vars.last() {
+            if *slot >= self.next_slot {
+                self.vars.pop();
+            } else {
+                break;
             }
         }
     }
 
     /// Holt den Slot einer Variable
     pub fn get(&self, name: &str) -> Option<Reg> {
-        if let Some(&slot) = self.vars.get(name) {
-            Some(slot)
-        } else if let Some(parent) = self.parent {
-            parent.get(name)
-        } else {
-            None
+        for (cur, slot) in self.vars.iter().rev() {
+            if cur == name {
+                return Some(*slot);
+            }
         }
+        None
     }
 
     /// Reserviert einen Slot für eine Variable
     pub fn alloc(&mut self, name: String) -> Reg {
         let slot = self.alloc_temp();
-        self.vars.insert(name, slot);
+        self.vars.push((name, slot));
         slot
     }
 
@@ -211,7 +231,9 @@ impl<'a> Frame<'a> {
     pub fn alloc_temp(&mut self) -> Reg {
         let slot = self.next_slot;
         self.next_slot += 1;
-        self.update_max_num_slots(self.next_slot);
+        if self.max_num_slots < self.next_slot {
+            self.max_num_slots = self.next_slot;
+        }
         slot
     }
 
@@ -219,21 +241,31 @@ impl<'a> Frame<'a> {
     pub fn alloc_temps(&mut self, count: u8) -> Range<Reg> {
         let start = self.next_slot;
         self.next_slot += count;
-        self.update_max_num_slots(self.next_slot);
+        if self.max_num_slots < self.next_slot {
+            self.max_num_slots = self.next_slot;
+        }
         start..self.next_slot
     }
 
+    #[inline]
     pub fn free(&mut self, reg: Reg) {
-        // TODO: ensure no named variables are freed: see lcode.c freereg
-        if reg + 1 == self.next_slot {
-            self.next_slot -= 1;
-        } else {
-            panic!("Can only free the last allocated register");
-        }
+        self.free_range(reg..reg+1);
     }
 
     pub fn free_range(&mut self, range: Range<Reg>) {
-        // TODO: ensure no named variables are freed: see lcode.c freereg
+        if range.start < *self.scopes.last().unwrap() {
+            panic!("Can only free registers from current scope");
+        }
+        if let Some((_, last_var)) = self.vars.last() {
+            if range.start <= *last_var {
+                // TODO: TBD is this panic correct, or just ignore
+                panic!("Can only free named variables");
+                // range.start = *last_var + 1;
+                // if range.start >= range.end {
+                //     return;
+                // }
+            }
+        }
         if range.end != self.next_slot {
             panic!("Can only free the last allocated registers");
         }
@@ -280,29 +312,32 @@ impl JumpList {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct Proto {
     pub num_params: u8,
     pub is_vararg: bool,
+    pub num_upvalues: u8,
     pub max_stack_size: u8,
-    pub bytecode: Vec<Op>,
-    pub constants: Vec<Constant>,
-    pub upvalues: Vec<String>, // names of upvalues
-    pub protos: Vec<Proto>,    // nested prototypes
+    pub bytecode: Box<[Op]>,
+    pub constants: Box<[Constant]>,
+    pub protos: Box<[Proto]>,    // nested prototypes
 }
 
+#[derive(Debug)]
 pub struct ProtoGenerator {
     pub num_params: u8,
     pub is_vararg: bool,
     pub bytecode: Vec<Op>,
-    pub frame: Frame<'static>,
+    pub frame: Frame,
     pub constants: ConstantPool,
     pub upvalues: Vec<String>, // names of upvalues
     pub protos: Vec<Proto>,    // nested prototypes
-    pub ifjumps: Vec<JumpList>, // jump-lists for pending if-then-else
-    pub loops: Vec<(ProgramCounter, JumpList)>, // loop start positions & end jump-lists
+    pub ifjumps: Vec<(bool, bool, JumpList)>, // jump-lists for pending if-then-else
+    pub loops: Vec<(bool, ProgramCounter, JumpList)>, // loop start positions & end jump-lists
     pub dead: bool,
 }
 
+#[derive(Debug)]
 pub struct BytecodeGenerator {
     pub protos: Vec<ProtoGenerator>
 }
@@ -363,11 +398,11 @@ impl ProtoGenerator {
         Proto {
             num_params: self.num_params,
             is_vararg: self.is_vararg,
-            max_stack_size: self.frame.max_num_slots.get(),
-            bytecode: self.bytecode,
-            constants: self.constants.into(),
-            upvalues: self.upvalues,
-            protos: self.protos,
+            num_upvalues: self.upvalues.len() as u8,
+            max_stack_size: self.frame.max_num_slots,
+            bytecode: self.bytecode.into_boxed_slice(),
+            constants: self.constants.into_boxed_slice(),
+            protos: self.protos.into_boxed_slice(),
         }
     }
 
