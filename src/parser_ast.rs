@@ -159,6 +159,7 @@ impl ParseVisitorOutput for AstVisitor {
 impl ParseVisitor for AstVisitor {
     type Error = Infallible;
     type Expr = ast::Expression;
+    type ExprList = Vec<ast::Expression>;
     type ExprCall = ast::FunctionCall;
     type ExprTable = Vec<ast::Field>;
     type Proto = ast::Proto;
@@ -205,11 +206,11 @@ impl ParseVisitor for AstVisitor {
         self.current_loop_mut().repeat_until_cond(condition);
     }
 
-    fn stmt_loop_for(&mut self, var: String, exprs: Vec<Self::Expr>) {
+    fn stmt_loop_for(&mut self, var: String, exprs: Self::ExprList) {
         self.current_loop_mut().fornum(var, exprs);
     }
 
-    fn stmt_loop_foreach(&mut self, vars: Vec<String>, exprs: Vec<Self::Expr>) {
+    fn stmt_loop_foreach(&mut self, vars: Vec<String>, exprs: Self::ExprList) {
         self.current_loop_mut().foreach(vars, exprs);
     }
 
@@ -246,7 +247,7 @@ impl ParseVisitor for AstVisitor {
         });
     }
 
-    fn stmt_return(&mut self, exprs: Vec<Self::Expr>) {
+    fn stmt_return(&mut self, exprs: Self::ExprList) {
         self.push_stmt(ast::Statement::Return(exprs));
     }
 
@@ -277,6 +278,14 @@ impl ParseVisitor for AstVisitor {
 
     fn stmt_expression(&mut self, expr: Self::Expr) {
         self.push_stmt(ast::Statement::Expression(Box::new(expr)));
+    }
+
+    fn expr_list_begin(&mut self) -> Self::ExprList {
+        Vec::new()
+    }
+
+    fn expr_list_item(&mut self, list: &mut Self::ExprList, expr: Self::Expr) {
+        list.push(expr);
     }
 
     fn expr_number(&mut self, n: ast::Number) -> Self::Expr {

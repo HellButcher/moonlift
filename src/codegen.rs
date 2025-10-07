@@ -83,6 +83,7 @@ impl ParseVisitorOutput for BytecodeGenerator {
 
 impl ParseVisitor for BytecodeGenerator {
     type Expr = Expr;
+    type ExprList = (Expr, u8);
     type ExprCall = (Expr, u8);
     type ExprTable = Expr;
     type Error = CodeGenerationError;
@@ -99,6 +100,24 @@ impl ParseVisitor for BytecodeGenerator {
     fn enter_expr(&mut self) {}
 
     fn leave_expr(&mut self) {}
+
+    fn expr_list_begin(&mut self) -> Self::ExprList {
+        (Expr::Void, 0)
+    }
+
+    fn expr_list_item(&mut self, (base, nargs): &mut Self::ExprList, mut expr: Self::Expr) {
+        let reg: u8 = self.expr_to_next_reg(&mut expr).unwrap();
+        if *nargs == 0 {
+            *base = expr;
+            *nargs = 1;
+        } else {
+            let ExprValue::NonReloc(base_reg) = base.value else {
+                panic!("Expected base to be in next register");
+            };
+            debug_assert_eq!(base_reg + *nargs, reg);
+            *nargs += 1;
+        }
+    }
 
     fn expr_number(&mut self, n: Number) -> Self::Expr {
         if self.dead {
@@ -453,17 +472,11 @@ impl ParseVisitor for BytecodeGenerator {
             prefix = self.expr_field(prefix, method)
         }
         self.expr_to_next_reg(&mut prefix).unwrap();
-        (prefix, 0)
+        (prefix, 1)
     }
 
-    fn expr_call_arg(&mut self, (base, nargs): &mut Self::ExprCall, mut arg: Self::Expr) {
-        let ExprValue::NonReloc(base_reg) = base.value else {
-            panic!("Expected base to be in next register");
-        };
-        let reg: u8 = self.expr_to_next_reg(&mut arg).unwrap();
-        let new_nargs = *nargs + 1;
-        debug_assert_eq!(base_reg + new_nargs, reg);
-        *nargs = new_nargs;
+    fn expr_call_arg(&mut self, list: &mut Self::ExprCall, arg: Self::Expr) {
+        self.expr_list_item(list, arg);
     }
 
     fn expr_call_end(&mut self, (base, nargs): Self::ExprCall) -> Self::Expr {
@@ -472,10 +485,9 @@ impl ParseVisitor for BytecodeGenerator {
         };
 
         // Emit call instruction
-        let pc = self.emit(op![Call(base_reg, nargs + 1, 0)]); // +1 for function itself
-
-        if nargs > 0 {
-            self.frame.free_range(base_reg + 1..base_reg + 1 + nargs); // KEEP 1 for the result
+        let pc = self.emit(op![Call(base_reg, nargs, 0)]); // +1 for function itself (nargs already includes +1)
+        if nargs > 1 {
+            self.frame.free_range(base_reg + 1..base_reg + nargs); // KEEP 1 for the result
         }
         Expr::new(ExprValue::Call(pc))
     }
@@ -604,17 +616,47 @@ impl ParseVisitor for BytecodeGenerator {
         self.patch_jmp_list(continue_jump, loop_start);
     }
 
-    fn stmt_loop_for(&mut self, var: String, exprs: Vec<Self::Expr>) {
+    fn stmt_loop_for(&mut self, varname: String, (base, nargs): Self::ExprList) {
         if self.dead {
             return;
         }
+        let ExprValue::NonReloc(base_reg) = base.value else {
+            panic!("Expected base to be in next register");
+        };
+        self.frame.free_range(base_reg..base_reg + nargs); // Temporary free
+                                                           // TODO: parse expressions as singular items
+
+        let varname_limit = format!("(for limit {})", varname);
+        let varname_step = format!("(for limit {})", varname);
+        let _var = self.frame.alloc(varname);
+        let _limit = self.frame.alloc(varname_limit);
+        let _step = self.frame.alloc(varname_step);
+
+        // TODO: implement for-loop
         todo!("For-Loop not implemented");
     }
 
-    fn stmt_loop_foreach(&mut self, vars: Vec<String>, exprs: Vec<Self::Expr>) {
+    fn stmt_loop_foreach(&mut self, vars: Vec<String>, (base, nargs): Self::ExprList) {
         if self.dead {
             return;
         }
+        let ExprValue::NonReloc(base_reg) = base.value else {
+            panic!("Expected base to be in next register");
+        };
+        self.frame.free_range(base_reg..base_reg + nargs); // Temporary free
+                                                           // TODO: parse expressions as singular items
+
+        let _gen = self.frame.alloc(String::from("(for gen)"));
+        let _state = self.frame.alloc(String::from("(for state)"));
+        let _control = self.frame.alloc(String::from("(for control)"));
+        let _toclose = self.frame.alloc(String::from("(for toclose)"));
+        let _vars_begin = self.frame.next();
+        for var in vars {
+            self.frame.alloc(var);
+        }
+        let _vars_end = self.frame.next();
+
+        // TODO: implement foreach-loop
         todo!("ForEach-Loop not implemented");
     }
 
@@ -670,27 +712,24 @@ impl ParseVisitor for BytecodeGenerator {
         self.expr_to_reg(&mut expr, reg).unwrap();
     }
 
-    fn stmt_return(&mut self, mut exprs: Vec<Self::Expr>) {
+    fn stmt_return(&mut self, (expr, nargs): Self::ExprList) {
         if self.dead {
             return;
         }
-        if exprs.is_empty() {
+        if nargs == 0 {
             self.emit(op![Ret0]);
-        } else if exprs.len() == 1 {
-            let mut expr = exprs.pop().unwrap();
-            let reg = self.expr_to_any_reg(&mut expr).unwrap();
-            self.emit(op![Ret1(reg, 1)]);
+        } else if nargs == 1 {
+            let ExprValue::NonReloc(reg) = expr.value else {
+                panic!("Expected expr to be in next register");
+            };
             self.frame.free(reg);
+            self.emit(op![Ret1(reg, 1)]);
         } else {
-            let num_rets = exprs.len() as u8;
-            let regs = self.frame.alloc_temps(num_rets);
-            let first_reg = regs.start;
-            for (i, expr) in exprs.iter_mut().enumerate() {
-                let reg = first_reg + i as u8;
-                self.expr_to_reg(expr, reg).unwrap();
-            }
-            self.emit(op![Ret(first_reg, num_rets as u16)]);
-            self.frame.free_range(regs);
+            let ExprValue::NonReloc(first_reg) = expr.value else {
+                panic!("Expected expr to be in next register");
+            };
+            self.emit(op![Ret(first_reg, nargs as u16)]);
+            self.frame.free_range(first_reg..first_reg + nargs);
         }
         self.dead = true;
     }

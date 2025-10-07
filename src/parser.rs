@@ -32,6 +32,7 @@ pub struct Parser<'a, S, V: ?Sized> {
 pub trait ParseVisitor {
     type Error;
     type Expr;
+    type ExprList;
     type ExprCall;
     type ExprTable;
     type Proto;
@@ -78,6 +79,10 @@ pub trait ParseVisitor {
     fn expr_table_field_exp(&mut self, table: &mut Self::ExprTable, expr: Self::Expr);
     fn expr_table_end(&mut self, table: Self::ExprTable) -> Self::Expr;
 
+    fn expr_list_begin(&mut self) -> Self::ExprList;
+    fn expr_list_item(&mut self, list: &mut Self::ExprList, expr: Self::Expr);
+    // expr_list ended by stmt_return, stmt_loop_for or stmt_loop_foreach
+
     fn enter_function(&mut self, is_method: bool, is_variadic: bool, args: Vec<String>);
     fn leave_function(&mut self) -> Self::Proto;
 
@@ -94,8 +99,8 @@ pub trait ParseVisitor {
     fn stmt_loop(&mut self);
     fn stmt_loop_while(&mut self, condition: Self::Expr);
     fn stmt_loop_repeat_until(&mut self, condition: Self::Expr);
-    fn stmt_loop_for(&mut self, var: String, exprs: Vec<Self::Expr>);
-    fn stmt_loop_foreach(&mut self, vars: Vec<String>, exprs: Vec<Self::Expr>);
+    fn stmt_loop_for(&mut self, var: String, exprs: Self::ExprList);
+    fn stmt_loop_foreach(&mut self, vars: Vec<String>, exprs: Self::ExprList);
     fn stmt_endloop(&mut self);
 
     fn stmt_do(&mut self) {}
@@ -105,7 +110,7 @@ pub trait ParseVisitor {
     fn stmt_locals_multi(&mut self, names: Vec<(String, String)>, expr: Self::Expr);
     fn stmt_local(&mut self, var: String, attribs: String, expr: Self::Expr);
 
-    fn stmt_return(&mut self, exprs: Vec<Self::Expr>);
+    fn stmt_return(&mut self, exprs: Self::ExprList);
     fn stmt_function(&mut self, name: ast::FuncName, proto: Self::Proto);
     fn stmt_local_function(&mut self, name: String, proto: Self::Proto);
     fn stmt_assignment(&mut self, lhs: Self::Expr, rhs: Self::Expr);
@@ -497,11 +502,13 @@ impl<'a, S: Source, V: ParseVisitor + ?Sized> Parser<'a, S, V> {
     /// ```
     fn parse_retstat(&mut self) -> Result<(), Error<S::Error, V::Error>> {
         self.expect_keyword("return")?;
-        let mut exprs = Vec::new();
+        let mut exprs = self.visitor.expr_list_begin();
         if !self.is_block_follow(true)? && !self.try_symbol(";")? {
-            exprs.push(self.parse_expression()?);
+            let e = self.parse_expression()?;
+            self.visitor.expr_list_item(&mut exprs, e);
             while self.try_symbol(",")? {
-                exprs.push(self.parse_expression()?);
+                let e = self.parse_expression()?;
+                self.visitor.expr_list_item(&mut exprs, e);
             }
             self.try_symbol(";")?;
         }
@@ -634,12 +641,15 @@ impl<'a, S: Source, V: ParseVisitor + ?Sized> Parser<'a, S, V> {
         if self.try_symbol("=")? {
             // stat ::= 'for' Name '=' exp ',' exp [',' exp] 'do' block 'end'
             self.visitor.enter_scope();
+            let mut exprs = self.visitor.expr_list_begin();
             let start = self.parse_expression()?;
+            self.visitor.expr_list_item(&mut exprs, start);
             self.expect_symbol(",")?;
             let end = self.parse_expression()?;
-            let mut exprs = vec![start, end];
+            self.visitor.expr_list_item(&mut exprs, end);
             if self.try_symbol(",")? {
-                exprs.push(self.parse_expression()?);
+                let step = self.parse_expression()?;
+                self.visitor.expr_list_item(&mut exprs, step);
             }
             self.visitor.stmt_loop();
             self.visitor.stmt_loop_for(var, exprs);
@@ -656,9 +666,12 @@ impl<'a, S: Source, V: ParseVisitor + ?Sized> Parser<'a, S, V> {
                 vars.push(self.expect_name()?);
             }
             self.expect_keyword("in")?;
-            let mut exprs = vec![self.parse_expression()?];
+            let mut exprs = self.visitor.expr_list_begin();
+            let e = self.parse_expression()?;
+            self.visitor.expr_list_item(&mut exprs, e);
             while self.try_symbol(",")? {
-                exprs.push(self.parse_expression()?);
+                let e = self.parse_expression()?;
+                self.visitor.expr_list_item(&mut exprs, e);
             }
             self.visitor.stmt_loop();
             self.visitor.stmt_loop_foreach(vars, exprs);
