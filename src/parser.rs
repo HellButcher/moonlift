@@ -32,6 +32,8 @@ pub struct Parser<'a, S, V: ?Sized> {
 pub trait ParseVisitor {
     type Error;
     type Expr;
+    type ExprCall;
+    type ExprTable;
     type Proto;
 
     fn enter_scope(&mut self) {}
@@ -49,13 +51,10 @@ pub trait ParseVisitor {
     fn expr_var(&mut self, name: String) -> Self::Expr;
     fn expr_index(&mut self, expr: Self::Expr, index: Self::Expr) -> Self::Expr;
     fn expr_field(&mut self, expr: Self::Expr, name: String) -> Self::Expr;
-    fn expr_self(&mut self, prefix: Self::Expr, method: String) -> Self::Expr;
-    fn expr_call(
-        &mut self,
-        prefix: Self::Expr,
-        args: Vec<Self::Expr>,
-        is_method: bool,
-    ) -> Self::Expr;
+
+    fn expr_call_begin(&mut self, prefix: Self::Expr, method: Option<String>) -> Self::ExprCall;
+    fn expr_call_arg(&mut self, call: &mut Self::ExprCall, arg: Self::Expr);
+    fn expr_call_end(&mut self, call: Self::ExprCall) -> Self::Expr;
 
     fn expr_prefix(&mut self, op: ast::UnaryOp, expr: Self::Expr) -> Self::Expr;
     // infix first emitted as `let tmp = expr_infix(lhs, op);`
@@ -63,11 +62,21 @@ pub trait ParseVisitor {
     fn expr_infix(&mut self, lhs: Self::Expr, op: ast::InfixOp) -> Self::Expr;
     fn expr_postfix(&mut self, infix: Self::Expr, op: ast::InfixOp, rhs: Self::Expr) -> Self::Expr;
 
-    fn expr_table_begin(&mut self);
-    fn expr_table_field_index(&mut self, key: Self::Expr, value: Self::Expr);
-    fn expr_table_field_named(&mut self, name: String, value: Self::Expr);
-    fn expr_table_field_exp(&mut self, expr: Self::Expr);
-    fn expr_table_end(&mut self) -> Self::Expr;
+    fn expr_table_begin(&mut self) -> Self::ExprTable;
+    fn expr_table_field_index(
+        &mut self,
+        table: &mut Self::ExprTable,
+        key: Self::Expr,
+        value: Self::Expr,
+    );
+    fn expr_table_field_named(
+        &mut self,
+        table: &mut Self::ExprTable,
+        name: String,
+        value: Self::Expr,
+    );
+    fn expr_table_field_exp(&mut self, table: &mut Self::ExprTable, expr: Self::Expr);
+    fn expr_table_end(&mut self, table: Self::ExprTable) -> Self::Expr;
 
     fn enter_function(&mut self, is_method: bool, is_variadic: bool, args: Vec<String>);
     fn leave_function(&mut self) -> Self::Proto;
@@ -974,15 +983,16 @@ impl<'a, S: Source, V: ParseVisitor + ?Sized> Parser<'a, S, V> {
                 Token::Symbol(":") => {
                     self.pop_token();
                     let method = self.expect_name()?;
-                    e = self.visitor.expr_self(e, method);
-                    let args = self.parse_args()?;
-                    e = self.visitor.expr_call(e, args, true)
+                    let mut args = self.visitor.expr_call_begin(e, Some(method));
+                    self.parse_args(&mut args)?;
+                    e = self.visitor.expr_call_end(args)
                 }
                 // prefixexp ::= functioncall
                 // functioncall ::= prefixexp args
                 Token::Symbol("(" | "{") | Token::String(_) => {
-                    let args = self.parse_args()?;
-                    e = self.visitor.expr_call(e, args, false)
+                    let mut args = self.visitor.expr_call_begin(e, None);
+                    self.parse_args(&mut args)?;
+                    e = self.visitor.expr_call_end(args)
                 }
                 // end of prefixexp
                 _ => return Ok(e),
@@ -1027,11 +1037,10 @@ impl<'a, S: Source, V: ParseVisitor + ?Sized> Parser<'a, S, V> {
     fn parse_table(&mut self) -> Result<V::Expr, Error<S::Error, V::Error>> {
         self.expect_symbol("{")?;
         let open_pos = self.lex.position();
-        self.visitor.expr_table_begin();
-        let mut fields = Vec::new();
+        let mut table = self.visitor.expr_table_begin();
         while !self.try_symbol("}")? {
             // fieldlist ::= field {fieldsep field} [fieldsep]
-            fields.push(self.parse_field()?);
+            self.parse_field(&mut table)?;
             // fieldsep ::= ',' | ';'
             if matches!(self.peek_token()?, Token::Symbol("," | ";")) {
                 self.pop_token();
@@ -1040,7 +1049,7 @@ impl<'a, S: Source, V: ParseVisitor + ?Sized> Parser<'a, S, V> {
                 break;
             }
         }
-        let e = self.visitor.expr_table_end();
+        let e = self.visitor.expr_table_end(table);
         Ok(e)
     }
 
@@ -1052,7 +1061,7 @@ impl<'a, S: Source, V: ParseVisitor + ?Sized> Parser<'a, S, V> {
     ///           Name '=' exp |
     ///           exp
     /// ```
-    fn parse_field(&mut self) -> Result<(), Error<S::Error, V::Error>> {
+    fn parse_field(&mut self, table: &mut V::ExprTable) -> Result<(), Error<S::Error, V::Error>> {
         match self.peek_token()? {
             // field ::= '[' exp ']' '=' exp
             Token::Symbol("[") => {
@@ -1062,7 +1071,7 @@ impl<'a, S: Source, V: ParseVisitor + ?Sized> Parser<'a, S, V> {
                 self.expect_match("]", "[", open_pos)?;
                 self.expect_symbol("=")?;
                 let e2 = self.parse_expression()?;
-                self.visitor.expr_table_field_index(e1, e2);
+                self.visitor.expr_table_field_index(table, e1, e2);
                 return Ok(());
             }
             // field ::= Name '=' exp
@@ -1073,7 +1082,7 @@ impl<'a, S: Source, V: ParseVisitor + ?Sized> Parser<'a, S, V> {
                         unreachable!()
                     };
                     let e2 = self.parse_expression()?;
-                    self.visitor.expr_table_field_named(n, e2);
+                    self.visitor.expr_table_field_named(table, n, e2);
                     return Ok(());
                 } else {
                     self.put_back_token(name_token);
@@ -1083,7 +1092,7 @@ impl<'a, S: Source, V: ParseVisitor + ?Sized> Parser<'a, S, V> {
         }
         // field ::= exp
         let e = self.parse_expression()?;
-        self.visitor.expr_table_field_exp(e);
+        self.visitor.expr_table_field_exp(table, e);
         Ok(())
     }
 
@@ -1094,31 +1103,20 @@ impl<'a, S: Source, V: ParseVisitor + ?Sized> Parser<'a, S, V> {
     /// args ::= '(' [explist] ')'
     /// explist ::= exp {',' exp}
     /// ```
-    fn parse_arglist(&mut self) -> Result<Vec<V::Expr>, Error<S::Error, V::Error>> {
+    fn parse_arglist(&mut self, args: &mut V::ExprCall) -> Result<(), Error<S::Error, V::Error>> {
         self.expect_symbol("(")?;
         let open_pos = self.lex.position();
         if !self.try_symbol(")")? {
-            let args = self.parse_explist()?;
+            loop {
+                let e = self.parse_expression()?;
+                self.visitor.expr_call_arg(args, e);
+                if !self.try_symbol(",")? {
+                    break;
+                }
+            }
             self.expect_match(")", "(", open_pos)?;
-            Ok(args)
-        } else {
-            Ok(Vec::new())
         }
-    }
-
-    /// Parses a Lua argument list.
-    ///
-    /// Grammar:
-    /// ```ebnf
-    /// explist ::= exp {',' exp}
-    /// ``
-    fn parse_explist(&mut self) -> Result<Vec<V::Expr>, Error<S::Error, V::Error>> {
-        let mut args = Vec::new();
-        args.push(self.parse_expression()?);
-        while self.try_symbol(",")? {
-            args.push(self.parse_expression()?);
-        }
-        Ok(args)
+        Ok(())
     }
 
     /// Parses Lua function call arguments.
@@ -1127,19 +1125,22 @@ impl<'a, S: Source, V: ParseVisitor + ?Sized> Parser<'a, S, V> {
     /// ```ebnf
     /// args ::= '(' [explist] ')' | tableconstructor | LiteralString
     /// ```
-    fn parse_args(&mut self) -> Result<Vec<V::Expr>, Error<S::Error, V::Error>> {
+    fn parse_args(&mut self, args: &mut V::ExprCall) -> Result<(), Error<S::Error, V::Error>> {
         match self.peek_token()? {
             // args ::= '(' [explist] ')'
-            Token::Symbol("(") => self.parse_arglist(),
+            Token::Symbol("(") => self.parse_arglist(args),
             // args ::= tableconstructor
             Token::Symbol("{") => {
                 let e = self.parse_table()?;
-                Ok(vec![e])
+                self.visitor.expr_call_arg(args, e);
+                Ok(())
             }
             // args ::= LiteralString
             Token::String(_) => {
                 let s = self.expect_string()?;
-                Ok(vec![self.visitor.expr_string(s)])
+                let e = self.visitor.expr_string(s);
+                self.visitor.expr_call_arg(args, e);
+                Ok(())
             }
             // error branch
             t => Err(Error::ParseError(ParseError::UnexpectedToken {
@@ -1341,7 +1342,7 @@ mod tests {
             Some(&Statement::Expression(Box::new(Expression::FunctCall(
                 Box::new(FunctionCall {
                     prefix: Expression::Var("assert".to_string()),
-                    method: String::new(),
+                    method: None,
                     args: vec![Expression::Infix(
                         Box::new(Expression::Field(
                             Box::new(Expression::Var("t1".to_string())),
@@ -1366,7 +1367,7 @@ mod tests {
                 block: vec![Statement::Expression(Box::new(Expression::FunctCall(
                     Box::new(FunctionCall {
                         prefix: Expression::Var("assert".to_string()),
-                        method: String::new(),
+                        method: None,
                         args: vec![Expression::Boolean(true)]
                     })
                 )))],

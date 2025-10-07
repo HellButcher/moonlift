@@ -236,7 +236,7 @@ pub type Block = Vec<Statement>;
 #[derive(Debug, PartialEq)]
 pub struct FunctionCall {
     pub prefix: Expression,
-    pub method: String,
+    pub method: Option<String>,
     pub args: Vec<Expression>,
 }
 

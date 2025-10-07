@@ -22,7 +22,6 @@ pub struct AstVisitor {
     blocks: Vec<ast::Block>,
     loops: Vec<Loop>,
     ifs: Vec<If>,
-    tables: Vec<Vec<ast::Field>>,
     functions: Vec<(bool, ast::Params)>,
 }
 
@@ -117,7 +116,6 @@ impl AstVisitor {
             blocks: vec![ast::Block::new()],
             loops: Vec::new(),
             ifs: Vec::new(),
-            tables: Vec::new(),
             functions: Vec::new(),
         }
     }
@@ -135,12 +133,6 @@ impl AstVisitor {
     }
     fn current_loop_mut(&mut self) -> &mut Loop {
         self.loops.last_mut().unwrap()
-    }
-    fn push_table_field(&mut self, field: ast::Field) {
-        self.tables
-            .last_mut()
-            .expect("not inside table")
-            .push(field);
     }
     fn push_stmt(&mut self, stmt: ast::Statement) {
         self.current_block_mut().push(stmt);
@@ -167,6 +159,8 @@ impl ParseVisitorOutput for AstVisitor {
 impl ParseVisitor for AstVisitor {
     type Error = Infallible;
     type Expr = ast::Expression;
+    type ExprCall = ast::FunctionCall;
+    type ExprTable = Vec<ast::Field>;
     type Proto = ast::Proto;
 
     fn stmt_label(&mut self, label: String) {
@@ -321,45 +315,44 @@ impl ParseVisitor for AstVisitor {
     fn expr_field(&mut self, expr: Self::Expr, name: String) -> Self::Expr {
         ast::Expression::Field(Box::new(expr), name)
     }
-    fn expr_self(&mut self, prefix: Self::Expr, method: String) -> Self::Expr {
-        ast::Expression::Field(Box::new(prefix), method)
-    }
-    fn expr_call(
-        &mut self,
-        prefix: Self::Expr,
-        args: Vec<Self::Expr>,
-        is_method: bool,
-    ) -> Self::Expr {
-        if is_method {
-            if let ast::Expression::Field(boxed_prefix, method) = prefix {
-                return ast::Expression::FunctCall(Box::new(ast::FunctionCall {
-                    prefix: *boxed_prefix,
-                    method,
-                    args,
-                }));
-            }
-        }
-        ast::Expression::FunctCall(Box::new(ast::FunctionCall {
+
+    fn expr_call_begin(&mut self, prefix: Self::Expr, method: Option<String>) -> Self::ExprCall {
+        ast::FunctionCall {
             prefix,
-            args,
-            method: String::new(),
-        }))
+            method,
+            args: Vec::new(),
+        }
+    }
+    fn expr_call_arg(&mut self, call: &mut Self::ExprCall, arg: Self::Expr) {
+        call.args.push(arg);
+    }
+    fn expr_call_end(&mut self, call: Self::ExprCall) -> Self::Expr {
+        ast::Expression::FunctCall(Box::new(call))
     }
 
-    fn expr_table_begin(&mut self) {
-        self.tables.push(Vec::new());
+    fn expr_table_begin(&mut self) -> Self::ExprTable {
+        Vec::new()
     }
-    fn expr_table_field_index(&mut self, key: Self::Expr, value: Self::Expr) {
-        self.push_table_field(ast::Field::Index(key, value));
+    fn expr_table_field_index(
+        &mut self,
+        table: &mut Self::ExprTable,
+        key: Self::Expr,
+        value: Self::Expr,
+    ) {
+        table.push(ast::Field::Index(key, value));
     }
-    fn expr_table_field_named(&mut self, name: String, value: Self::Expr) {
-        self.push_table_field(ast::Field::Named(name, value));
+    fn expr_table_field_named(
+        &mut self,
+        table: &mut Self::ExprTable,
+        name: String,
+        value: Self::Expr,
+    ) {
+        table.push(ast::Field::Named(name, value));
     }
-    fn expr_table_field_exp(&mut self, expr: Self::Expr) {
-        self.push_table_field(ast::Field::Exp(expr));
+    fn expr_table_field_exp(&mut self, table: &mut Self::ExprTable, expr: Self::Expr) {
+        table.push(ast::Field::Exp(expr));
     }
-    fn expr_table_end(&mut self) -> Self::Expr {
-        let table = self.tables.pop().expect("no table to end");
+    fn expr_table_end(&mut self, table: Self::ExprTable) -> Self::Expr {
         ast::Expression::Table(table)
     }
 

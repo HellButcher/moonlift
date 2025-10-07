@@ -83,6 +83,8 @@ impl ParseVisitorOutput for BytecodeGenerator {
 
 impl ParseVisitor for BytecodeGenerator {
     type Expr = Expr;
+    type ExprCall = (Expr, u8);
+    type ExprTable = Expr;
     type Error = CodeGenerationError;
     type Proto = Proto;
 
@@ -442,86 +444,92 @@ impl ParseVisitor for BytecodeGenerator {
         }
     }
 
-    fn expr_self(&mut self, prefix: Self::Expr, method: String) -> Self::Expr {
-        self.expr_field(prefix, method)
-    }
-
-    fn expr_call(
+    fn expr_call_begin(
         &mut self,
         mut prefix: Self::Expr,
-        mut args: Vec<Self::Expr>,
-        _is_method: bool,
-    ) -> Self::Expr {
-        if prefix.is_void() || self.dead {
-            return Expr::Void;
+        method: Option<String>,
+    ) -> Self::ExprCall {
+        if let Some(method) = method {
+            prefix = self.expr_field(prefix, method)
         }
-        // Get the function to call
-        self.discharge_vars_mut(&mut prefix.value);
-        for (i, arg) in args.iter_mut().enumerate() {
-            self.discharge_vars_mut(&mut arg.value);
-        }
+        self.expr_to_next_reg(&mut prefix).unwrap();
+        (prefix, 0)
+    }
 
-        for (i, arg) in args.iter_mut().enumerate().rev() {
-            self.expr_free(&arg.value);
-        }
+    fn expr_call_arg(&mut self, (base, nargs): &mut Self::ExprCall, mut arg: Self::Expr) {
+        let ExprValue::NonReloc(base_reg) = base.value else {
+            panic!("Expected base to be in next register");
+        };
+        let reg: u8 = self.expr_to_next_reg(&mut arg).unwrap();
+        let new_nargs = *nargs + 1;
+        debug_assert_eq!(base_reg + new_nargs, reg);
+        *nargs = new_nargs;
+    }
 
-        let func_slot = self.expr_to_next_reg(&mut prefix).unwrap();
-
-        // Allocate slots for arguments
-        let num_args = args.len() as u8;
-        let regs = self.frame.alloc_temps(num_args); // +1 for function itself
-        let first_arg = regs.start;
-
-        // Load arguments into consecutive slots
-        for (i, arg) in args.iter_mut().enumerate() {
-            let arg_slot = first_arg + i as u8;
-            self.expr_to_reg(arg, arg_slot).unwrap();
-        }
+    fn expr_call_end(&mut self, (base, nargs): Self::ExprCall) -> Self::Expr {
+        let ExprValue::NonReloc(base_reg) = base.value else {
+            panic!("Expected base to be in next register");
+        };
 
         // Emit call instruction
-        let pc = self.emit(op![Call(func_slot, num_args + 1, 0)]); // +1 for function itself
+        let pc = self.emit(op![Call(base_reg, nargs + 1, 0)]); // +1 for function itself
 
-        self.frame.free_range(regs); // KEEP 1 for the result
-
+        if nargs > 0 {
+            self.frame.free_range(base_reg + 1..base_reg + 1 + nargs); // KEEP 1 for the result
+        }
         Expr::new(ExprValue::Call(pc))
     }
 
-    fn expr_table_begin(&mut self) {
-        if self.dead {}
-        // TODO: table creation needs refactoring
-
-        // Create a new table and allocate a slot for it
-        // let table_slot = self.frame.alloc_temp();
-        // self.emit(op![TNew(table_slot, 0)]); // Empty table for now
-        //                                      // We would need to track this table slot somehow, for now simplified
-    }
-
-    fn expr_table_field_index(&mut self, _key: Self::Expr, _value: Self::Expr) {
-        if self.dead {}
-        // For proper implementation, we'd need to track the current table being built
-        // For now, just a placeholder
-    }
-
-    fn expr_table_field_named(&mut self, _name: String, _value: Self::Expr) {
-        if self.dead {}
-        // For proper implementation, we'd need to track the current table being built
-        // For now, just a placeholder
-    }
-
-    fn expr_table_field_exp(&mut self, _expr: Self::Expr) {
-        if self.dead {}
-        // For proper implementation, we'd need to track the current table being built
-        // For now, just a placeholder
-    }
-
-    fn expr_table_end(&mut self) -> Self::Expr {
+    fn expr_table_begin(&mut self) -> Self::ExprTable {
         if self.dead {
             return Expr::Void;
         }
-        // Return a placeholder table
-        // This is simplified - a proper implementation would track the table construction
-        let pc = self.emit(op![TNew(0, 0)]); // Empty table
-        Expr::Reloc(pc)
+        // Create a new table and allocate a slot for it
+        let table_slot = self.frame.alloc_temp();
+        self.emit(op![TNew(table_slot, 0)]); // Empty table for now
+
+        Expr::new(ExprValue::NonReloc(table_slot))
+    }
+
+    fn expr_table_field_index(
+        &mut self,
+        table: &mut Self::ExprTable,
+        _key: Self::Expr,
+        _value: Self::Expr,
+    ) {
+        if self.dead {
+            return;
+        }
+        // For proper implementation, we'd need to track the current table being built
+        // For now, just a placeholder
+        todo!("Table field by expression not implemented");
+    }
+
+    fn expr_table_field_named(
+        &mut self,
+        table: &mut Self::ExprTable,
+        _name: String,
+        _value: Self::Expr,
+    ) {
+        if self.dead {
+            return;
+        }
+        // For proper implementation, we'd need to track the current table being built
+        // For now, just a placeholder
+        todo!("Table field by expression not implemented");
+    }
+
+    fn expr_table_field_exp(&mut self, table: &mut Self::ExprTable, _expr: Self::Expr) {
+        if self.dead {
+            return;
+        }
+        // For proper implementation, we'd need to track the current table being built
+        // For now, just a placeholder
+        todo!("Table field by expression not implemented");
+    }
+
+    fn expr_table_end(&mut self, table: Self::ExprTable) -> Self::Expr {
+        table
     }
 
     fn stmt_label(&mut self, label: String) {
