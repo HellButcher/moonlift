@@ -487,9 +487,7 @@ impl ParseVisitor for BytecodeGenerator {
     }
 
     fn expr_table_begin(&mut self) {
-        if self.dead {
-            return;
-        }
+        if self.dead {}
         // TODO: table creation needs refactoring
 
         // Create a new table and allocate a slot for it
@@ -499,25 +497,19 @@ impl ParseVisitor for BytecodeGenerator {
     }
 
     fn expr_table_field_index(&mut self, _key: Self::Expr, _value: Self::Expr) {
-        if self.dead {
-            return;
-        }
+        if self.dead {}
         // For proper implementation, we'd need to track the current table being built
         // For now, just a placeholder
     }
 
     fn expr_table_field_named(&mut self, _name: String, _value: Self::Expr) {
-        if self.dead {
-            return;
-        }
+        if self.dead {}
         // For proper implementation, we'd need to track the current table being built
         // For now, just a placeholder
     }
 
     fn expr_table_field_exp(&mut self, _expr: Self::Expr) {
-        if self.dead {
-            return;
-        }
+        if self.dead {}
         // For proper implementation, we'd need to track the current table being built
         // For now, just a placeholder
     }

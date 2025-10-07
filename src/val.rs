@@ -161,10 +161,7 @@ impl Value {
         if i < (!(!0u64 >> 18)) as i64 || i > ((!0u64 >> 18) as i64) {
             None
         } else {
-            Some(Self::tagged(
-                TypeTag::Int,
-                i as u64 & (!0u64 >> 17),
-            ))
+            Some(Self::tagged(TypeTag::Int, i as u64 & (!0u64 >> 17)))
         }
     }
 

@@ -439,26 +439,34 @@ impl ProtoGenerator {
         ProgramCounter(self.bytecode.len())
     }
 
-    /// Returns the instruction that controls the jump at `jump_op_pc`.
-    /// THis is either the conditional Opcode before the jump, or the jump itself for unconditional jumps.
+    /// Returns the program counter of the instruction that controls the jump at `jump_op_pc`.
+    /// This is either the conditional Opcode before the jump, or the jump itself for unconditional jumps.
     #[inline]
-    fn get_jmp_ctrl_mut(&mut self, jump_op_pc: ProgramCounter) -> &mut Op {
-        let (a, b) = self.bytecode.split_at_mut(jump_op_pc.0);
-        let jump_op = &mut b[0];
+    fn get_jmp_ctrl_pc(&self, jump_op_pc: ProgramCounter) -> ProgramCounter {
         #[cfg(debug_assertions)]
-        if !matches!(jump_op.opcode(), OpCode::Jmp) {
-            panic!("get_jmp_ctrl called on non-jump opcode");
+        {
+            let jump_op = &self.bytecode[jump_op_pc.0];
+            if !matches!(jump_op.opcode(), OpCode::Jmp) {
+                panic!("get_jmp_ctrl called on non-jump opcode");
+            }
         }
-        let Some(prev_op) = a.last_mut() else {
-            return jump_op; // Kein vorheriger Opcode
-        };
-        prev_op
+        if jump_op_pc.0 == 0 {
+            return jump_op_pc;
+        }
+        let prev_op_pc = ProgramCounter(jump_op_pc.0 - 1);
+        let prev_op = &self.bytecode[prev_op_pc.0];
+        if prev_op.opcode().is_cond() {
+            prev_op_pc
+        } else {
+            jump_op_pc
+        }
     }
 
     /// Negates the condition of a jump instruction.
     /// The condition is the instruction before the jump, or the jump itself for unconditional jumps.
     pub fn negate_jmp_ctrl(&mut self, jump_op_pc: ProgramCounter) -> bool {
-        self.get_jmp_ctrl_mut(jump_op_pc).negate()
+        let ctrl_pc = self.get_jmp_ctrl_pc(jump_op_pc);
+        self[ctrl_pc].negate()
     }
 
     /// Returns the target PC of a jump instruction
@@ -552,7 +560,8 @@ impl ProtoGenerator {
     /// If `dest` is NO_REG or the same as the source register, the
     /// instruction is patched to a simple IsT/IsF op (without setting register).
     pub fn patch_test_set_dest(&mut self, jump_op_pc: ProgramCounter, dest: Reg) -> bool {
-        let jmp_ctrl = self.get_jmp_ctrl_mut(jump_op_pc);
+        let jmp_ctrl_pc = self.get_jmp_ctrl_pc(jump_op_pc);
+        let jmp_ctrl = &mut self[jmp_ctrl_pc];
         let new_op = match_op!((jmp_ctrl) {
             IsTC(_,d) => {
                 if dest != NO_REG && dest != d {
@@ -572,6 +581,20 @@ impl ProtoGenerator {
         });
         *jmp_ctrl = new_op;
         true
+    }
+
+    pub fn contains_test_set_value(&self, mut jump_list: JumpList) -> bool {
+        while jump_list != JumpList::NO_JUMP {
+            let next_jump_pc = self.get_jmp_target(jump_list.0);
+            if jump_list.0 .0 > 0 {
+                let prev_op = &self.bytecode[jump_list.0 .0 - 1];
+                if matches!(prev_op.opcode(), OpCode::IsTC | OpCode::IsFC) {
+                    return true;
+                }
+            }
+            jump_list = JumpList(next_jump_pc);
+        }
+        false
     }
 
     /// Patches a jump instruction to point to the current PC.
@@ -826,14 +849,60 @@ impl ProtoGenerator {
     }
 
     pub fn expr_to_reg(&mut self, expr: &mut Expr, dest: u8) -> Result<(), CodeGenerationError> {
-        // TODO: handle jump lists
         match self.discharge_to_reg_mut(&mut expr.value, dest)? {
-            DischargedRegOrJmp::Jmp(jump) => todo!(), // TODO: handle jumps
+            DischargedRegOrJmp::Jmp(jump_pc) => {
+                // Expression itself is a test, put this jump in 't' list
+                self.push_jump_list(&mut expr.jump_true, jump_pc);
+            }
             DischargedRegOrJmp::Reg(r) => {
                 debug_assert_eq!(dest, r);
-                Ok(())
             }
         }
+
+        // Handle expressions with pending jumps
+        if expr.has_jumps() {
+            // Check if we need to materialize boolean values
+            // For now, always materialize
+            let mut p_f = ProgramCounter::NO_JUMP;
+            let mut p_t = ProgramCounter::NO_JUMP;
+            // TODO: implement need_value optimization)
+            let need_bool_values = true;
+            if need_bool_values {
+                // Emit jump to skip boolean loading if expression is not a test
+                let skip_jump = if matches!(expr.value, ExprValue::Jmp(_)) {
+                    ProgramCounter::NO_JUMP
+                } else {
+                    self.emit_jmp_placeholder()
+                };
+
+                // Load false and skip next instruction
+                p_f = self.emit(op![KPri(dest, dest, 0)]); // load false
+                let skip_true = self.emit_jmp_placeholder(); // skip next instruction
+
+                // Load true
+                p_t = self.emit(op![KPri(dest, dest, 1)]); // load true
+
+                // Patch jump around booleans if expression is not a test
+                if skip_jump != ProgramCounter::NO_JUMP {
+                    self.patch_jmp_here(skip_jump);
+                }
+
+                // Patch the skip instruction after loading false
+                self.patch_jmp_here(skip_true);
+            }
+            // No boolean values needed, just patch all jumps to final position
+            let pc = self.pc();
+            self.patch_jmp_list_aux(expr.jump_false, pc, dest, p_f);
+            self.patch_jmp_list_aux(expr.jump_true, pc, dest, p_t);
+
+            // Clear jump lists and set expression as non-relocatable
+            expr.jump_false = JumpList::NO_JUMP;
+            expr.jump_true = JumpList::NO_JUMP;
+        }
+
+        expr.value = ExprValue::NonReloc(dest);
+
+        Ok(())
     }
 
     pub fn expr_to_next_reg(&mut self, expr: &mut Expr) -> Result<u8, CodeGenerationError> {
