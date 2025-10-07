@@ -5,8 +5,10 @@ use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::fmt;
 use std::hash::Hash;
-use std::ops::{Add, BitAnd, BitOr, BitXor, Deref, DerefMut, Div, Mul, Neg, Not, Rem, Shl, Shr, Sub};
-use std::{cell::Cell, ops::Range};
+use std::ops::Range;
+use std::ops::{
+    Add, BitAnd, BitOr, BitXor, Deref, DerefMut, Div, Mul, Neg, Not, Rem, Shl, Shr, Sub,
+};
 
 use crate::ast::{InfixOp, UnaryOp};
 use crate::opcode::{Op, OpCode};
@@ -210,6 +212,24 @@ impl Frame {
         }
     }
 
+    pub fn check_clean(&self) {
+        let last_var = self.last_var().map_or(0, |v| v + 1);
+        assert_eq!(
+            self.next_slot, last_var,
+            "Frame not clean: next_slot={}, last_var+1={}",
+            self.next_slot, last_var
+        );
+    }
+
+    #[inline]
+    pub fn next(&self) -> u8 {
+        self.next_slot
+    }
+
+    pub fn last_var(&self) -> Option<u8> {
+        self.vars.last().map(|(_, v)| *v)
+    }
+
     /// Holt den Slot einer Variable
     pub fn get(&self, name: &str) -> Option<Reg> {
         for (cur, slot) in self.vars.iter().rev() {
@@ -220,11 +240,21 @@ impl Frame {
         None
     }
 
-    /// Reserviert einen Slot für eine Variable
-    pub fn alloc(&mut self, name: String) -> Reg {
+    pub fn alloc_with_attribs(&mut self, name: String, attribs: String) -> Reg {
+        self.check_clean();
         let slot = self.alloc_temp();
+        #[cfg(debug_assertions)]
+        {
+            eprintln!("alloc var {name} (attribs: {attribs}) at slot {slot}");
+        }
         self.vars.push((name, slot));
         slot
+    }
+
+    /// Reserviert einen Slot für eine Variable
+    #[inline]
+    pub fn alloc(&mut self, name: String) -> Reg {
+        self.alloc_with_attribs(name, String::new())
     }
 
     /// Reserviert einen temporären Slot
@@ -249,26 +279,30 @@ impl Frame {
 
     #[inline]
     pub fn free(&mut self, reg: Reg) {
-        self.free_range(reg..reg+1);
+        self.free_range(reg..reg + 1);
     }
 
-    pub fn free_range(&mut self, range: Range<Reg>) {
-        if range.start < *self.scopes.last().unwrap() {
-            panic!("Can only free registers from current scope");
-        }
+    pub fn free_range(&mut self, mut range: Range<Reg>) {
+        let last_scope = *self.scopes.last().unwrap();
         if let Some((_, last_var)) = self.vars.last() {
             if range.start <= *last_var {
-                // TODO: TBD is this panic correct, or just ignore
-                panic!("Can only free named variables");
-                // range.start = *last_var + 1;
-                // if range.start >= range.end {
-                //     return;
-                // }
+                // don't free named variables
+                range.start = *last_var + 1;
+                if range.start >= range.end {
+                    return;
+                }
             }
         }
-        if range.end != self.next_slot {
-            panic!("Can only free the last allocated registers");
+        if range.start < last_scope {
+            panic!(
+                "Can only free registers from current scope ({:?} < {})",
+                range, last_scope
+            );
         }
+        assert_eq!(
+            range.end, self.next_slot,
+            "Can only free the last allocated registers"
+        );
         self.next_slot = range.start;
     }
 
@@ -281,7 +315,6 @@ impl Frame {
             self.free(reg1);
         }
     }
-
 }
 
 #[repr(transparent)]
@@ -289,7 +322,6 @@ impl Frame {
 pub struct ProgramCounter(pub usize);
 
 impl ProgramCounter {
-
     pub const NO_JUMP: Self = Self(!0);
 
     #[inline]
@@ -302,13 +334,12 @@ impl ProgramCounter {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct JumpList(pub ProgramCounter);
 
-
 impl JumpList {
     pub const NO_JUMP: Self = Self(ProgramCounter::NO_JUMP);
 
     #[inline]
     pub const fn has_jumps(&self) -> bool {
-        self.0.0 != !0
+        self.0 .0 != !0
     }
 }
 
@@ -320,7 +351,7 @@ pub struct Proto {
     pub max_stack_size: u8,
     pub bytecode: Box<[Op]>,
     pub constants: Box<[Constant]>,
-    pub protos: Box<[Proto]>,    // nested prototypes
+    pub protos: Box<[Proto]>, // nested prototypes
 }
 
 #[derive(Debug)]
@@ -330,24 +361,22 @@ pub struct ProtoGenerator {
     pub bytecode: Vec<Op>,
     pub frame: Frame,
     pub constants: ConstantPool,
-    pub upvalues: Vec<String>, // names of upvalues
-    pub protos: Vec<Proto>,    // nested prototypes
-    pub ifjumps: Vec<(bool, bool, JumpList)>, // jump-lists for pending if-then-else
+    pub upvalues: Vec<String>,                        // names of upvalues
+    pub protos: Vec<Proto>,                           // nested prototypes
+    pub ifjumps: Vec<(bool, bool, JumpList)>,         // jump-lists for pending if-then-else
     pub loops: Vec<(bool, ProgramCounter, JumpList)>, // loop start positions & end jump-lists
     pub dead: bool,
 }
 
 #[derive(Debug)]
 pub struct BytecodeGenerator {
-    pub protos: Vec<ProtoGenerator>
+    pub protos: Vec<ProtoGenerator>,
 }
 
 impl BytecodeGenerator {
     #[inline]
     pub const fn new() -> Self {
-        Self {
-            protos: Vec::new()
-        }
+        Self { protos: Vec::new() }
     }
 
     pub fn current_proto_mut(&mut self) -> &mut ProtoGenerator {
@@ -365,13 +394,11 @@ impl Deref for BytecodeGenerator {
 }
 
 impl DerefMut for BytecodeGenerator {
-
     #[inline]
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.protos.last_mut().expect("no current proto")
     }
 }
-
 
 impl ProtoGenerator {
     pub fn new(is_vararg: bool, args: Vec<String>) -> Self {
@@ -443,7 +470,7 @@ impl ProtoGenerator {
         }
         let d = jump_op.args().d();
         if d == !0 {
-            return ProgramCounter::NO_JUMP;
+            ProgramCounter::NO_JUMP
         } else {
             ProgramCounter((jump_op_pc.0 as isize + d as isize) as usize)
         }
@@ -521,7 +548,6 @@ impl ProtoGenerator {
         self.concat_jump_list(list1, JumpList(jmp));
     }
 
-
     /// Patches a IsTC/IsFC instruction to set its destination register to `dest`.
     /// If `dest` is NO_REG or the same as the source register, the
     /// instruction is patched to a simple IsT/IsF op (without setting register).
@@ -568,6 +594,11 @@ impl ProtoGenerator {
         self.emit(op![Jmp(arg, offset)])
     }
 
+    pub fn emit_load_prim(&mut self, dest: Reg, prim: u8, num: u8) -> ProgramCounter {
+        // TODO: optimize:
+        self.emit(op![KPri(dest, dest + num - 1, prim)])
+    }
+
     #[inline]
     pub fn emit(&mut self, op: Op) -> ProgramCounter {
         if self.dead {
@@ -578,14 +609,14 @@ impl ProtoGenerator {
         pc
     }
 
-    pub fn patch_one_ret_pc(&mut self, pc: ProgramCounter) -> Option<ExprValue> {
+    fn patch_ret_n_pc(&mut self, n_results: u8, pc: ProgramCounter) -> Option<ExprValue> {
         match_op! {(&mut self.bytecode[pc.0]) {
-            Call(a,ref mut b,_) => {
-                *b = 2; // 1 result
+            Call(a,_,ref mut c) => {
+                *c = n_results + 1;
                 Some(ExprValue::NonReloc(a)) // result is in base register
             },
-            VArg(_,ref mut b,_) => {
-                *b = 2; // 1 result
+            VArg(ref mut a,_,ref mut c) => {
+                *c = n_results + 1;
                 Some(ExprValue::Reloc(pc))
             },
             _ => None,
@@ -596,12 +627,47 @@ impl ProtoGenerator {
     /// If expression is not a multi-ret expression (function call or vararg), it already returns one result, so nothing needs to be done.
     /// Function calls become `NonReloc` expressions (as its result comes fixed in the base register of the call).
     /// vararg expressions become `Reloc`` as the opcode allows to puts its results where it wants.
-    pub fn patch_one_ret(&mut self, value: ExprValue) -> ExprValue {
+    pub fn patch_one_ret(&mut self, value: &mut ExprValue) {
         match value {
             ExprValue::Call(pc) | ExprValue::VarArg(pc) => {
-                self.patch_one_ret_pc(pc).expect("invalid op")
+                *value = self.patch_ret_n_pc(1, *pc).expect("invalid op");
             }
-            _ => value,
+            _ => {}
+        }
+    }
+
+    pub fn patch_ret_n(&mut self, value: &mut ExprValue, num_rets: u8) -> Option<Range<u8>> {
+        let new_value = match value {
+            ExprValue::Call(pc) | ExprValue::VarArg(pc) => {
+                self.patch_ret_n_pc(num_rets, *pc).expect("invalid op")
+            }
+            _ => return None,
+        };
+        *value = new_value;
+        match *value {
+            ExprValue::NonReloc(a) => {
+                if num_rets > 1 {
+                    // reserve additional registers
+                    debug_assert_eq!(a + 1, self.frame.next());
+                    self.frame.alloc_temps(num_rets - 1);
+                } else if num_rets == 0 {
+                    // free the previously registed slot
+                    self.frame.free(a);
+                }
+                Some(a..a + num_rets)
+            }
+            ExprValue::Reloc(pc) => {
+                if num_rets > 0 {
+                    // reserve additional registers
+                    let range = self.frame.alloc_temps(num_rets);
+                    self[pc].set_a_dst(range.start).expect("invalid op");
+                    *value = ExprValue::NonReloc(range.start);
+                    Some(range)
+                } else {
+                    None
+                }
+            }
+            _ => unreachable!(),
         }
     }
 
@@ -615,14 +681,14 @@ impl ProtoGenerator {
             | ExprValue::Const(_)
             | ExprValue::Jmp(_)
             | ExprValue::NonReloc(_)
-            | ExprValue::Reloc(_) => {},
+            | ExprValue::Reloc(_) => {}
             ExprValue::Local(r) => {
                 *value = ExprValue::NonReloc(*r);
-            },
+            }
             ExprValue::Global(k) => {
                 let pc = self.emit(op![GGet(0, *k)]);
                 *value = ExprValue::Reloc(pc);
-            },
+            }
             ExprValue::Upval(uv) => {
                 let pc = self.emit(op![UGet(0, *uv)]);
                 *value = ExprValue::Reloc(pc);
@@ -632,6 +698,7 @@ impl ProtoGenerator {
                 key_slot,
             } => {
                 let pc = self.emit(op![TGetV(0, *table_slot, *key_slot)]);
+                self.frame.free2(*table_slot, *key_slot);
                 *value = ExprValue::Reloc(pc);
             }
             ExprValue::IdxI {
@@ -639,6 +706,7 @@ impl ProtoGenerator {
                 key_value,
             } => {
                 let pc = self.emit(op![TGetB(0, *table_slot, *key_value)]);
+                self.frame.free(*table_slot);
                 *value = ExprValue::Reloc(pc);
             }
             ExprValue::IdxStr {
@@ -646,14 +714,14 @@ impl ProtoGenerator {
                 key_const,
             } => {
                 let pc = self.emit(op![TGetS(0, *table_slot, *key_const)]);
+                self.frame.free(*table_slot);
                 *value = ExprValue::Reloc(pc);
             }
-            ExprValue::Call(pc) | ExprValue::VarArg(pc) => {
-                *value = self.patch_one_ret_pc(*pc).expect("invalid op")
+            ExprValue::Call(_) | ExprValue::VarArg(_) => {
+                self.patch_one_ret(value);
             }
         }
     }
-
 
     #[inline]
     pub fn discharge_vars(&mut self, mut value: ExprValue) -> ExprValue {
@@ -667,9 +735,9 @@ impl ProtoGenerator {
         dest: u8,
     ) -> Result<ProgramCounter, CodeGenerationError> {
         match value {
-            ConstValue::Nil => Ok(self.emit(op![KPri(dest, 0)])),
-            ConstValue::Bool(false) => Ok(self.emit(op![KPri(dest, 1)])),
-            ConstValue::Bool(true) => Ok(self.emit(op![KPri(dest, 2)])),
+            ConstValue::Nil => Ok(self.emit_load_prim(dest, 0, 1)),
+            ConstValue::Bool(false) => Ok(self.emit_load_prim(dest, 1, 1)),
+            ConstValue::Bool(true) => Ok(self.emit_load_prim(dest, 2, 1)),
             ConstValue::Int(i) => {
                 if i16::MIN as i64 <= i && i <= i16::MAX as i64 {
                     Ok(self.emit(op![KShort(dest, i as i16)]))
@@ -705,6 +773,9 @@ impl ProtoGenerator {
             }
             ExprValue::NonReloc(r) if r == dest => {}
             ExprValue::NonReloc(r) => {
+                if dest < r {
+                    self.frame.free(r);
+                }
                 self.emit(op![Mov(dest, r)]);
             }
             ExprValue::Reloc(pc) => {
@@ -737,7 +808,9 @@ impl ProtoGenerator {
     ) -> Result<DischargedRegOrJmp, CodeGenerationError> {
         match value {
             ExprValue::NonReloc(r) => Ok(DischargedRegOrJmp::Reg(*r)),
+            ExprValue::Local(r) => Ok(DischargedRegOrJmp::Reg(*r)),
             _ => {
+                self.discharge_vars_mut(value);
                 let dest = self.frame.alloc_temp();
                 self.discharge_to_reg_mut(value, dest)
             }
@@ -774,11 +847,8 @@ impl ProtoGenerator {
     pub fn expr_to_any_reg(&mut self, expr: &mut Expr) -> Result<u8, CodeGenerationError> {
         match expr.value {
             ExprValue::NonReloc(r) => Ok(r),
-            _ => {
-                let dest = self.frame.alloc_temp();
-                self.expr_to_reg(expr, dest)?;
-                Ok(dest)
-            }
+            ExprValue::Local(r) => Ok(r),
+            _ => self.expr_to_next_reg(expr),
         }
     }
 
@@ -804,11 +874,7 @@ impl ProtoGenerator {
     /// is true, code will jump if 'e' is true.) Return jump position.
     /// Optimize when 'e' is 'not' something, inverting the condition
     /// and removing the 'not'.
-    pub fn emit_jmp_condition(
-        &mut self,
-        value: ExprValue,
-        condition: bool,
-    ) -> ProgramCounter {
+    pub fn emit_jmp_condition(&mut self, value: ExprValue, condition: bool) -> ProgramCounter {
         let value = self.discharge_vars(value);
         if let ExprValue::Reloc(pc) = value {
             match_op!((self[pc]) {
@@ -845,13 +911,13 @@ impl ProtoGenerator {
                 } else {
                     panic!("Failed to negate jump condition")
                 }
-            },
+            }
             ExprValue::Const(c) if c.is_truthy() => {
                 ProgramCounter::NO_JUMP // always true, no jump needed
-            },
+            }
             _ => {
                 self.emit_jmp_condition(expr.take(), false) // jump if false
-            },
+            }
         };
         self.push_jump_list(&mut expr.jump_false, pc);
         self.patch_jmp_list_here(expr.jump_true);
@@ -866,13 +932,13 @@ impl ProtoGenerator {
             ExprValue::Jmp(jump_pc) => {
                 // Already a conditional jump - return as is
                 *jump_pc
-            },
+            }
             ExprValue::Const(c) if c.is_falsy() => {
                 ProgramCounter::NO_JUMP // always false, no jump needed
-            },
+            }
             _ => {
                 self.emit_jmp_condition(expr.take(), false) // jump if false
-            },
+            }
         };
         self.push_jump_list(&mut expr.jump_true, pc);
         self.patch_jmp_list_here(expr.jump_false);
@@ -1204,6 +1270,7 @@ pub enum ExprValue {
     VarArg(ProgramCounter), // pc of the VarArg instruction
 }
 
+#[derive(Debug, Clone)]
 pub struct Expr {
     pub value: ExprValue,
     pub jump_true: JumpList,  // pc of jump if true

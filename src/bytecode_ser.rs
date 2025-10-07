@@ -1,7 +1,14 @@
-use std::{io::{self, Read}, ops::Deref, pin::Pin};
+use std::{
+    io::{self, Read},
+    ops::Deref,
+    pin::Pin,
+};
 
-use crate::{Bytecode, codegen_state::{Constant, Proto}, opcode::{Op, OpCode}};
-
+use crate::{
+    codegen_state::{Constant, Proto},
+    opcode::{Op, OpCode},
+    Bytecode,
+};
 
 #[derive(thiserror::Error, Debug, PartialEq)]
 pub enum DeserialisationError {
@@ -37,7 +44,7 @@ fn read_dynamic_u64(read: &mut impl io::Read) -> Result<u64, io::Error> {
 impl Bytecode {
     pub const VERSION: u32 = 1;
     pub const MAGIC: [u8; 8] = *b"MOONLIFT";
-    
+
     pub fn write_binary(&self, out: &mut impl io::Write) -> Result<(), io::Error> {
         out.write_all(&Self::MAGIC)?;
         out.write_all(&Self::VERSION.to_le_bytes())?;
@@ -48,19 +55,24 @@ impl Bytecode {
         let mut magic = [0u8; 8];
         read.read_exact(&mut magic)?;
         if magic != Self::MAGIC {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid magic number"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Invalid magic number",
+            ));
         }
         let mut version_buf = [0u8; 4];
         read.read_exact(&mut version_buf)?;
         let version = u32::from_le_bytes(version_buf);
         if version != Self::VERSION {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "Unsupported version"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Unsupported version",
+            ));
         }
         let root = Proto::read_binary(read)?;
         Ok(Self { root })
     }
 }
-
 
 impl Proto {
     pub fn write_binary(&self, out: &mut impl io::Write) -> Result<(), io::Error> {
@@ -71,8 +83,8 @@ impl Proto {
         out.write_all(&(self.num_upvalues as u16).to_le_bytes())?;
         out.write_all(&(self.protos.len() as u16).to_le_bytes())?;
         out.write_all(&(self.bytecode.len() as u32).to_le_bytes())?;
-        out.write_all(&[0u8;4])?; // reserved
-        // write constants
+        out.write_all(&[0u8; 4])?; // reserved
+                                   // write constants
         for constant in &self.constants {
             constant.write_binary(out)?;
         }
@@ -141,8 +153,6 @@ impl Proto {
     }
 }
 
-
-
 impl Constant {
     pub fn write_binary(&self, out: &mut impl io::Write) -> Result<(), io::Error> {
         match self {
@@ -186,7 +196,7 @@ impl Constant {
                 Ok(Constant::Float(f64::from_le_bytes(float_buf)))
             }
             n if n >= 8 => {
-                let str_len = if n >= 0x80 { 
+                let str_len = if n >= 0x80 {
                     ((read_dynamic_u64(read)? << 7 | ((n as u64) & 0x7F)) - 8) as usize
                 } else {
                     (n as usize) - 8
@@ -195,23 +205,26 @@ impl Constant {
                 read.take(str_len as u64).read_to_end(&mut buf)?;
                 Ok(Constant::String(Pin::from(buf.into_boxed_slice())))
             }
-            _ => Err(io::Error::new(io::ErrorKind::InvalidData, "Unknown constant type")),
+            _ => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Unknown constant type",
+            )),
         }
     }
-}   
+}
 
 impl Op {
     #[inline]
-    pub const fn from_le_bytes(bytes: [u8;4]) -> Result<Self, DeserialisationError> {
+    pub const fn from_le_bytes(bytes: [u8; 4]) -> Result<Self, DeserialisationError> {
         let op = bytes[0];
         if op < OpCode::MIN || op > OpCode::MAX {
             return Err(DeserialisationError::InvalidOpCode(op));
         }
-        Ok(unsafe { std::mem::transmute::<[u8;4], Op>(bytes) })
+        Ok(unsafe { std::mem::transmute::<[u8; 4], Op>(bytes) })
     }
 
     #[inline]
-    pub const fn to_le_bytes(self) -> [u8;4] {
-        unsafe { std::mem::transmute::<Op, [u8;4]>(self) }
+    pub const fn to_le_bytes(self) -> [u8; 4] {
+        unsafe { std::mem::transmute::<Op, [u8; 4]>(self) }
     }
 }

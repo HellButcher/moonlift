@@ -2,7 +2,6 @@ use std::sync::Mutex;
 
 use crate::opcode::OpCode;
 
-
 pub struct Module {
     pub functions: Vec<Function>,
 }
@@ -42,7 +41,9 @@ impl FunctionBuilder {
     pub fn block(&self) -> BlockBuilder<'_> {
         let mut blocks = self.blocks.lock().unwrap();
         let block = blocks.len();
-        blocks.push(Block { statements: Vec::new() });
+        blocks.push(Block {
+            statements: Vec::new(),
+        });
         BlockBuilder {
             function: self,
             block,

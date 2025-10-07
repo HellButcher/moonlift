@@ -20,11 +20,10 @@ fn parse_test_and_compile_to_bytecode(path: impl AsRef<Path>) -> Bytecode {
     }
 }
 
-fn compile_test_jit(source: &Ast) {
-    let mut jit = moonlift::jit::JIT::new();
-    jit.compile(source).unwrap()
-}
-
+// fn compile_test_jit(source: &Ast) {
+//     let mut jit = moonlift::jit::JIT::new();
+//     jit.compile(source).unwrap()
+// }
 
 #[test]
 fn parse_and_compile_bc_test__all() {

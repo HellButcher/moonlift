@@ -1,6 +1,5 @@
 use std::fmt;
 
-
 macro_rules! __mkop {
     (is_a_dst_impl [dst $(, $x:ident)*]) => (true);
     (is_a_dst_impl [$($x:ident),*]) => (false);
@@ -260,19 +259,28 @@ pub trait OpArgs<const OP: u8> {
     }
 }
 
-pub struct ArgsViewMut<'a, Args, const OP: u8> where Args: OpArgs<OP> {
+pub struct ArgsViewMut<'a, Args, const OP: u8>
+where
+    Args: OpArgs<OP>,
+{
     args: &'a mut Args,
     pub mapped: <Args as OpArgs<OP>>::Args,
 }
 
-impl<'a, Args, const OP: u8> ArgsViewMut<'a, Args, OP> where Args: OpArgs<OP> {
+impl<'a, Args, const OP: u8> ArgsViewMut<'a, Args, OP>
+where
+    Args: OpArgs<OP>,
+{
     pub fn new(args: &'a mut Args) -> Self {
         let mapped = args.get();
         Self { args, mapped }
     }
 }
 
-impl<'a, Args, const OP: u8> Drop for ArgsViewMut<'a, Args, OP> where Args: OpArgs<OP> {
+impl<'a, Args, const OP: u8> Drop for ArgsViewMut<'a, Args, OP>
+where
+    Args: OpArgs<OP>,
+{
     fn drop(&mut self) {
         self.args.set(self.mapped);
     }
@@ -288,7 +296,7 @@ const _: () = {
 };
 
 /// Macro to match an [`Op`] and destructure its arguments.
-/// 
+///
 /// # Examples
 /// ```rust
 /// # use moonlift::opcode::{op, match_op};
@@ -383,7 +391,7 @@ macro_rules! match_op {
 }
 
 /// Macro to create an [`Op`] from an [`OpCode`] with arguments.
-/// 
+///
 /// # Examples
 /// ```rust,no_run
 /// # use moonlift::opcode::op;
@@ -411,7 +419,7 @@ macro_rules! op {
 #[test]
 fn test_match_op() {
     let mut op = op!(AddVV(1, 2, 3));
-    match_op!{(&mut op) {
+    match_op! {(&mut op) {
         AddVV (a, ref mut b, c) => {
             assert_eq!(a, 1);
             assert_eq!(*b, 2);
@@ -423,7 +431,7 @@ fn test_match_op() {
         },
         _ => panic!("unexpected opcode"),
     }};
-    match_op!{(op) {
+    match_op! {(op) {
         AddVV(a, b, c) => {
             assert_eq!(a, 1);
             assert_eq!(b, 12);
@@ -732,18 +740,17 @@ define_opcodes! {
     KNum(a: dst, d: num) {
       let a = d;
     },
-    // Set A to primitive D
-    // switch (D) {
-    //     case 0: A = nil;
-    //     case 1: A = false;
-    //     case 2: A = true;
+    // Set A to B to primitive C
+    // switch (C) {
+    //     case 0: A..B = nil;
+    //     case 1: A..B = false;
+    //     case 2: A..B = true;
     // }
-    KPri(a: dst, d: pri) {
-      let a = d;
-    },
-    // Set slots A to D to nil
-    KNil(a: base, d: base) {
-      todo!();
+    KPri(a: base, b: base, c: pri) {
+        let val = Value::from_pri(c);
+        for i in a..=b {
+            vm.set(i, val);
+        }
     },
 
     // Set A to upvalue D

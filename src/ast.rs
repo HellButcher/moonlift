@@ -30,7 +30,7 @@ pub enum Statement {
     Break,
     Assign {
         vars: Vec<Expression>,
-        exprs: Vec<Expression>,
+        expr: Box<Expression>,
     },
     Label(String),
     Goto(String),
@@ -63,7 +63,7 @@ pub enum Statement {
     },
     Local {
         vars: Vec<(String, String)>,
-        exprs: Vec<Expression>,
+        exprs: Option<Box<Expression>>,
     },
 }
 

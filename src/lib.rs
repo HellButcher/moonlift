@@ -3,23 +3,28 @@ use std::{convert::Infallible, io};
 use ast::Block;
 use lexer::Position;
 
-use crate::{codegen_state::{BytecodeGenerator, CodeGenerationError, Proto}, lexer::LexerError, parser::{ParseError, ParseVisitorOutput}, parser_ast::AstVisitor};
+use crate::{
+    codegen_state::{BytecodeGenerator, CodeGenerationError, Proto},
+    lexer::LexerError,
+    parser::{ParseError, ParseVisitorOutput},
+    parser_ast::AstVisitor,
+};
 
 mod ast;
 mod val;
 #[macro_use]
 mod opcode;
-mod vm;
 mod codegen;
 mod codegen_state;
+mod vm;
 //mod ffi;
 //mod ffi_impl;
-pub mod jit;
-mod source;
+//pub mod jit;
+mod bytecode_ser;
 mod lexer;
 mod parser;
 mod parser_ast;
-mod bytecode_ser;
+mod source;
 
 #[derive(thiserror::Error, Debug, PartialEq)]
 pub enum Error<IoError = Infallible, VisitorError = Infallible> {
@@ -70,12 +75,16 @@ pub struct Bytecode {
 }
 
 impl Bytecode {
-    pub fn parse_bytes(bytes: impl AsRef<[u8]>) -> Result<Self, ErrorWithPosition<Infallible, CodeGenerationError>> {
+    pub fn parse_bytes(
+        bytes: impl AsRef<[u8]>,
+    ) -> Result<Self, ErrorWithPosition<Infallible, CodeGenerationError>> {
         let proto = BytecodeGenerator::new().parse_bytes_with_debug(bytes)?;
         Ok(Self::from_proto(proto))
     }
 
-    pub fn parse(read: impl io::Read) -> Result<Self, ErrorWithPosition<io::Error, CodeGenerationError>> {
+    pub fn parse(
+        read: impl io::Read,
+    ) -> Result<Self, ErrorWithPosition<io::Error, CodeGenerationError>> {
         let proto = BytecodeGenerator::new().parse_read_with_debug(read)?;
         Ok(Self::from_proto(proto))
     }

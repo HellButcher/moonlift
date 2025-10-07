@@ -1,6 +1,9 @@
 use std::{convert::Infallible, vec};
 
-use crate::{ast, parser::{ParseVisitor, ParseVisitorOutput}};
+use crate::{
+    ast,
+    parser::{ParseVisitor, ParseVisitorOutput},
+};
 
 enum Loop {
     None,
@@ -54,24 +57,10 @@ impl Loop {
     fn end(self, block: ast::Block) -> ast::Statement {
         match self {
             Self::None => panic!("No loop condition set"),
-            Self::While(cond) => ast::Statement::While {
-                cond,
-                block,
-            },
-            Self::Repeat(cond) => ast::Statement::Repeat {
-                block,
-                cond,
-            },
-            Self::ForNum(var, exprs) => ast::Statement::ForNum {
-                var,
-                exprs,
-                block,
-            },
-            Self::ForEach(vars, exprs) => ast::Statement::ForEach {
-                vars,
-                exprs,
-                block,
-            },
+            Self::While(cond) => ast::Statement::While { cond, block },
+            Self::Repeat(cond) => ast::Statement::Repeat { block, cond },
+            Self::ForNum(var, exprs) => ast::Statement::ForNum { var, exprs, block },
+            Self::ForEach(vars, exprs) => ast::Statement::ForEach { vars, exprs, block },
         }
     }
 }
@@ -82,10 +71,14 @@ impl If {
     }
 
     fn elsecase(&mut self, block: ast::Block) {
-        let Self::If(old_condition) = std::mem::replace(self, Self::Else(ast::Expression::Nil, block)) else {
+        let Self::If(old_condition) =
+            std::mem::replace(self, Self::Else(ast::Expression::Nil, block))
+        else {
             panic!("Else case already set");
         };
-        let Self::Else(condition, ..) = self else { unreachable!() };
+        let Self::Else(condition, ..) = self else {
+            unreachable!()
+        };
         *condition = old_condition;
     }
 
@@ -144,13 +137,19 @@ impl AstVisitor {
         self.loops.last_mut().unwrap()
     }
     fn push_table_field(&mut self, field: ast::Field) {
-        self.tables.last_mut().expect("not inside table").push(field);
+        self.tables
+            .last_mut()
+            .expect("not inside table")
+            .push(field);
     }
     fn push_stmt(&mut self, stmt: ast::Statement) {
         self.current_block_mut().push(stmt);
     }
     pub fn last_stmt(&self) -> Option<&ast::Statement> {
-        self.current_block().last()
+        self.blocks.last()?.last()
+    }
+    pub fn last_stmt_mut(&mut self) -> Option<&mut ast::Statement> {
+        self.blocks.last_mut()?.last_mut()
     }
 }
 
@@ -235,10 +234,21 @@ impl ParseVisitor for AstVisitor {
         self.push_stmt(ast::Statement::Do(block));
     }
 
-    fn stmt_locals(&mut self, names: Vec<(String, String)>, exprs: Vec<Self::Expr>) {
+    fn stmt_locals_uninit(&mut self, vars: Vec<(String, String)>) {
+        self.push_stmt(ast::Statement::Local { vars, exprs: None });
+    }
+
+    fn stmt_locals_multi(&mut self, vars: Vec<(String, String)>, expr: Self::Expr) {
         self.push_stmt(ast::Statement::Local {
-            vars: names,
-            exprs,
+            vars,
+            exprs: Some(Box::new(expr)),
+        });
+    }
+
+    fn stmt_local(&mut self, name: String, attribs: String, expr: Self::Expr) {
+        self.push_stmt(ast::Statement::Local {
+            vars: vec![(name, attribs)],
+            exprs: Some(Box::new(expr)),
         });
     }
 
@@ -253,12 +263,22 @@ impl ParseVisitor for AstVisitor {
     fn stmt_local_function(&mut self, name: String, proto: ast::Proto) {
         self.push_stmt(ast::Statement::Local {
             vars: vec![(name, String::new())],
-            exprs: vec![ast::Expression::FunctDef(proto)],
+            exprs: Some(Box::new(ast::Expression::FunctDef(proto))),
         });
     }
 
-    fn stmt_assignment(&mut self, vars: Vec<Self::Expr>, exprs: Vec<Self::Expr>) {
-        self.push_stmt(ast::Statement::Assign{vars, exprs});
+    fn stmt_assignment(&mut self, var: Self::Expr, rhs: Self::Expr) {
+        self.push_stmt(ast::Statement::Assign {
+            vars: vec![var],
+            expr: Box::new(rhs),
+        });
+    }
+
+    fn stmt_assignment_multi(&mut self, vars: Vec<Self::Expr>, rhs: Self::Expr) {
+        self.push_stmt(ast::Statement::Assign {
+            vars,
+            expr: Box::new(rhs),
+        });
     }
 
     fn stmt_expression(&mut self, expr: Self::Expr) {
@@ -304,15 +324,27 @@ impl ParseVisitor for AstVisitor {
     fn expr_self(&mut self, prefix: Self::Expr, method: String) -> Self::Expr {
         ast::Expression::Field(Box::new(prefix), method)
     }
-    fn expr_call(&mut self, prefix: Self::Expr, args: Vec<Self::Expr>, is_method: bool) -> Self::Expr {
+    fn expr_call(
+        &mut self,
+        prefix: Self::Expr,
+        args: Vec<Self::Expr>,
+        is_method: bool,
+    ) -> Self::Expr {
         if is_method {
             if let ast::Expression::Field(boxed_prefix, method) = prefix {
-                return ast::Expression::FunctCall(Box::new(ast::FunctionCall { prefix: *boxed_prefix, method, args }));
+                return ast::Expression::FunctCall(Box::new(ast::FunctionCall {
+                    prefix: *boxed_prefix,
+                    method,
+                    args,
+                }));
             }
         }
-        ast::Expression::FunctCall(Box::new(ast::FunctionCall { prefix, args, method: String::new() }))
+        ast::Expression::FunctCall(Box::new(ast::FunctionCall {
+            prefix,
+            args,
+            method: String::new(),
+        }))
     }
-
 
     fn expr_table_begin(&mut self) {
         self.tables.push(Vec::new());
@@ -333,12 +365,22 @@ impl ParseVisitor for AstVisitor {
 
     fn enter_function(&mut self, is_method: bool, is_variadic: bool, args: Vec<String>) {
         self.enter_block();
-        self.functions.push((is_method, ast::Params { names: args, variadic: is_variadic }));
+        self.functions.push((
+            is_method,
+            ast::Params {
+                names: args,
+                variadic: is_variadic,
+            },
+        ));
     }
 
     fn leave_function(&mut self) -> Self::Proto {
         let block = self.leave_block();
         let (is_method, params) = self.functions.pop().expect("not in function");
-        ast::Proto { method: is_method, params, body: block }
+        ast::Proto {
+            method: is_method,
+            params,
+            body: block,
+        }
     }
 }

@@ -1,7 +1,10 @@
-use std::{convert::Infallible, fmt::Debug, io};
+use std::{collections::VecDeque, convert::Infallible, fmt::Debug, io};
 
 use crate::{
-    Error, ErrorWithPosition, ast, lexer::{Lexer, LexerError, Position, Token}, source::Source
+    ast,
+    lexer::{Lexer, LexerError, Position, Token},
+    source::Source,
+    Error, ErrorWithPosition,
 };
 
 #[derive(thiserror::Error, Debug, PartialEq)]
@@ -47,7 +50,12 @@ pub trait ParseVisitor {
     fn expr_index(&mut self, expr: Self::Expr, index: Self::Expr) -> Self::Expr;
     fn expr_field(&mut self, expr: Self::Expr, name: String) -> Self::Expr;
     fn expr_self(&mut self, prefix: Self::Expr, method: String) -> Self::Expr;
-    fn expr_call(&mut self, prefix: Self::Expr, args: Vec<Self::Expr>, is_method: bool) -> Self::Expr;
+    fn expr_call(
+        &mut self,
+        prefix: Self::Expr,
+        args: Vec<Self::Expr>,
+        is_method: bool,
+    ) -> Self::Expr;
 
     fn expr_prefix(&mut self, op: ast::UnaryOp, expr: Self::Expr) -> Self::Expr;
     // infix first emitted as `let tmp = expr_infix(lhs, op);`
@@ -84,17 +92,24 @@ pub trait ParseVisitor {
     fn stmt_do(&mut self) {}
     fn stmt_enddo(&mut self) {}
 
-    fn stmt_locals(&mut self, names: Vec<(String,String)>, exprs: Vec<Self::Expr>);
+    fn stmt_locals_uninit(&mut self, names: Vec<(String, String)>);
+    fn stmt_locals_multi(&mut self, names: Vec<(String, String)>, expr: Self::Expr);
+    fn stmt_local(&mut self, var: String, attribs: String, expr: Self::Expr);
+
     fn stmt_return(&mut self, exprs: Vec<Self::Expr>);
     fn stmt_function(&mut self, name: ast::FuncName, proto: Self::Proto);
     fn stmt_local_function(&mut self, name: String, proto: Self::Proto);
-    fn stmt_assignment(&mut self, vars: Vec<Self::Expr>, exprs: Vec<Self::Expr>);
+    fn stmt_assignment(&mut self, lhs: Self::Expr, rhs: Self::Expr);
+    fn stmt_assignment_multi(&mut self, lhs: Vec<Self::Expr>, rhs: Self::Expr);
     fn stmt_expression(&mut self, expr: Self::Expr);
 }
 
 #[cfg(debug_assertions)]
-fn print_position_when_unwinding<S,V,F,R>(parser: &mut Parser<S,V>, f: F) -> R
-    where S: Source, V: Debug + ?Sized, F: FnOnce(&mut Parser<S,V>) -> R + std::panic::UnwindSafe
+fn print_position_when_unwinding<S, V, F, R>(parser: &mut Parser<S, V>, f: F) -> R
+where
+    S: Source,
+    V: Debug + ?Sized,
+    F: FnOnce(&mut Parser<S, V>) -> R + std::panic::UnwindSafe,
 {
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(parser))) {
         Ok(r) => r,
@@ -108,8 +123,11 @@ fn print_position_when_unwinding<S,V,F,R>(parser: &mut Parser<S,V>, f: F) -> R
 }
 
 #[cfg(not(debug_assertions))]
-fn print_position_when_unwinding<S,V,F,R>(parser: &mut Parser<S,V>, f: F) -> R
-    where S: Source, V: ?Sized, F: FnOnce(&mut Parser<S,V>) -> R + std::panic::UnwindSafe
+fn print_position_when_unwinding<S, V, F, R>(parser: &mut Parser<S, V>, f: F) -> R
+where
+    S: Source,
+    V: ?Sized,
+    F: FnOnce(&mut Parser<S, V>) -> R + std::panic::UnwindSafe,
 {
     f(parser)
 }
@@ -119,32 +137,46 @@ pub trait ParseVisitorOutput: ParseVisitor {
     fn start(&mut self) -> Result<(), Self::Error>;
     fn done(&mut self) -> Result<Self::Output, Self::Error>;
 
-    fn parse_bytes(&mut self, bytes: impl AsRef<[u8]>) -> Result<Self::Output, ErrorWithPosition<Infallible, Self::Error>> {
+    fn parse_bytes(
+        &mut self,
+        bytes: impl AsRef<[u8]>,
+    ) -> Result<Self::Output, ErrorWithPosition<Infallible, Self::Error>> {
         let mut lexer = Lexer::from_bytes(bytes);
         let mut parser = Parser::new(&mut lexer, self);
         parser.parse_with_err_pos()
     }
 
-    fn parse_read(&mut self, read: impl io::Read) -> Result<Self::Output, ErrorWithPosition<io::Error,Self::Error>> {
+    fn parse_read(
+        &mut self,
+        read: impl io::Read,
+    ) -> Result<Self::Output, ErrorWithPosition<io::Error, Self::Error>> {
         let mut lexer = Lexer::read(read);
         let mut parser = Parser::new(&mut lexer, self);
         parser.parse_with_err_pos()
     }
 
-    fn parse_bytes_with_debug(&mut self, bytes: impl AsRef<[u8]>) -> Result<Self::Output, ErrorWithPosition<Infallible, Self::Error>> where Self: Debug {
+    fn parse_bytes_with_debug(
+        &mut self,
+        bytes: impl AsRef<[u8]>,
+    ) -> Result<Self::Output, ErrorWithPosition<Infallible, Self::Error>>
+    where
+        Self: Debug,
+    {
         let mut lexer = Lexer::from_bytes(bytes);
         let mut parser = Parser::new(&mut lexer, self);
-        print_position_when_unwinding(&mut parser, |parser| {
-            parser.parse_with_err_pos()
-        })
+        print_position_when_unwinding(&mut parser, |parser| parser.parse_with_err_pos())
     }
 
-    fn parse_read_with_debug(&mut self, read: impl io::Read) -> Result<Self::Output, ErrorWithPosition<io::Error,Self::Error>> where Self: Debug {
+    fn parse_read_with_debug(
+        &mut self,
+        read: impl io::Read,
+    ) -> Result<Self::Output, ErrorWithPosition<io::Error, Self::Error>>
+    where
+        Self: Debug,
+    {
         let mut lexer = Lexer::read(read);
         let mut parser = Parser::new(&mut lexer, self);
-        print_position_when_unwinding(&mut parser, |parser| {
-            parser.parse_with_err_pos()
-        })
+        print_position_when_unwinding(&mut parser, |parser| parser.parse_with_err_pos())
     }
 }
 
@@ -228,7 +260,12 @@ impl<'a, S: Source, V: ?Sized> Parser<'a, S, V> {
         }
     }
 
-    fn expect_match<E>(&mut self, close: &'static str, opened_by: &'static str, opened_pos: Position) -> Result<(), Error<S::Error, E>> {
+    fn expect_match<E>(
+        &mut self,
+        close: &'static str,
+        opened_by: &'static str,
+        opened_pos: Position,
+    ) -> Result<(), Error<S::Error, E>> {
         match self.next_token()? {
             Token::Symbol(s) | Token::Keyword(s) if s == close => Ok(()),
             e => Err(Error::ParseError(ParseError::UnexpectedClosingToken {
@@ -274,7 +311,6 @@ impl<'a, S: Source, V: ?Sized> Parser<'a, S, V> {
     }
 }
 
-
 impl<'a, S: Source, V: ParseVisitorOutput + ?Sized> Parser<'a, S, V> {
     pub fn parse(&mut self) -> Result<V::Output, Error<S::Error, V::Error>> {
         self.visitor.start();
@@ -288,7 +324,9 @@ impl<'a, S: Source, V: ParseVisitorOutput + ?Sized> Parser<'a, S, V> {
         }
     }
 
-    pub fn parse_with_err_pos(&mut self) -> Result<V::Output, ErrorWithPosition<S::Error, V::Error>> {
+    pub fn parse_with_err_pos(
+        &mut self,
+    ) -> Result<V::Output, ErrorWithPosition<S::Error, V::Error>> {
         match self.parse() {
             Ok(output) => Ok(output),
             Err(e) => Err(ErrorWithPosition {
@@ -300,14 +338,12 @@ impl<'a, S: Source, V: ParseVisitorOutput + ?Sized> Parser<'a, S, V> {
 }
 
 impl<'a, S: Source, V: ParseVisitor + ?Sized> Parser<'a, S, V> {
-    fn wrap_visitor_error<T>(
-        res: Result<T, V::Error>,
-    ) -> Result<T, Error<S::Error, V::Error>> {
+    fn wrap_visitor_error<T>(res: Result<T, V::Error>) -> Result<T, Error<S::Error, V::Error>> {
         res.map_err(Error::CodegenError)
     }
 
     /// Parses a Lua `block`.
-    /// 
+    ///
     /// Grammar:
     /// ```ebnf
     /// block ::= {stat} [retstat]
@@ -315,12 +351,12 @@ impl<'a, S: Source, V: ParseVisitor + ?Sized> Parser<'a, S, V> {
     fn parse_block(&mut self) -> Result<(), Error<S::Error, V::Error>> {
         self.visitor.enter_scope();
         self.parse_statement_list()?;
-        self.visitor.enter_scope();
+        self.visitor.leave_scope();
         Ok(())
     }
 
     /// Parses a a list of statements. like block, but without scope management.
-    /// 
+    ///
     /// Grammar:
     /// ```ebnf
     /// block ::= {stat} [retstat]
@@ -332,33 +368,32 @@ impl<'a, S: Source, V: ParseVisitor + ?Sized> Parser<'a, S, V> {
         Ok(())
     }
 
-    fn is_block_follow<E>(&mut self, with_until: bool) -> Result<bool, Error<S::Error, E>>{
+    fn is_block_follow<E>(&mut self, with_until: bool) -> Result<bool, Error<S::Error, E>> {
         let t = self.peek_token()?;
-        Ok(matches!(
-            t,
-            Token::Eof
-                | Token::Keyword("end" | "else" | "elseif")
-        ) || (with_until && matches!(t, Token::Keyword("until"))))
+        Ok(
+            matches!(t, Token::Eof | Token::Keyword("end" | "else" | "elseif"))
+                || (with_until && matches!(t, Token::Keyword("until"))),
+        )
     }
 
     /// Parses a single Lua statement.
     ///
     /// Grammar:
     /// ```ebnf
-    /// stat ::=  ';' | 
-    ///           varlist '=' explist | 
-    ///           functioncall | 
-    ///           label | 
-    ///           'break' | 
-    ///           'goto' Name | 
-    ///           'do' block 'end' | 
-    ///           'while' exp 'do' block 'end' | 
-    ///           'repeat' block 'until' exp | 
-    ///           'if' exp 'then' block {'elseif' exp 'then' block} ['else' block] 'end' | 
-    ///           'for' Name '=' exp ',' exp [',' exp] 'do' block 'end' | 
-    ///           'for' namelist 'in' explist 'do' block 'end' | 
-    ///           'function' funcname funcbody | 
-    ///           'local' function Name funcbody | 
+    /// stat ::=  ';' |
+    ///           varlist '=' explist |
+    ///           functioncall |
+    ///           label |
+    ///           'break' |
+    ///           'goto' Name |
+    ///           'do' block 'end' |
+    ///           'while' exp 'do' block 'end' |
+    ///           'repeat' block 'until' exp |
+    ///           'if' exp 'then' block {'elseif' exp 'then' block} ['else' block] 'end' |
+    ///           'for' Name '=' exp ',' exp [',' exp] 'do' block 'end' |
+    ///           'for' namelist 'in' explist 'do' block 'end' |
+    ///           'function' funcname funcbody |
+    ///           'local' function Name funcbody |
     ///           'local' attnamelist ['=' explist]
     /// retstat ::= return [explist] [‘;’]
     /// ```
@@ -402,7 +437,7 @@ impl<'a, S: Source, V: ParseVisitor + ?Sized> Parser<'a, S, V> {
             Token::Keyword("return") => self.parse_retstat(),
             // stat ::= varlist '=' explist
             // stat ::= functioncall
-            _ => self.parse_expressionstat()
+            _ => self.parse_expressionstat(),
         }
     }
 
@@ -506,7 +541,7 @@ impl<'a, S: Source, V: ParseVisitor + ?Sized> Parser<'a, S, V> {
 
     /// Parses a test-then block, used in if and elseif statements
     /// (without the `if` or `elseif` keywords).
-    /// 
+    ///
     /// Grammar:
     /// ```ebnf
     /// test_then_block ::= ~'if'~ exp 'then' block
@@ -519,7 +554,6 @@ impl<'a, S: Source, V: ParseVisitor + ?Sized> Parser<'a, S, V> {
         self.parse_block()?;
         Ok(())
     }
-
 
     /// Parses a `do` statement.
     ///
@@ -627,7 +661,7 @@ impl<'a, S: Source, V: ParseVisitor + ?Sized> Parser<'a, S, V> {
         }
         Ok(())
     }
-    
+
     /// Parses a `function` statement.
     ///
     /// Grammar:
@@ -658,7 +692,6 @@ impl<'a, S: Source, V: ParseVisitor + ?Sized> Parser<'a, S, V> {
         Ok(())
     }
 
-
     /// Parses a local definition statement. after the 'local' keyword.
     ///
     /// Grammar:
@@ -670,14 +703,30 @@ impl<'a, S: Source, V: ParseVisitor + ?Sized> Parser<'a, S, V> {
         while self.try_symbol(",")? {
             vars.push(self.parse_nameattrib()?);
         }
-        let mut exprs = Vec::new();
         if self.try_symbol("=")? {
-            exprs.push(self.parse_expression()?);
+            let mut vars = VecDeque::from(vars);
+            let mut last_expr = self.parse_expression()?;
             while self.try_symbol(",")? {
-                exprs.push(self.parse_expression()?);
+                if let Some((var, attribs)) = vars.pop_front() {
+                    self.visitor.stmt_local(var, attribs, last_expr);
+                } else {
+                    // extra expressions are evaluated but not assigned
+                    self.visitor.stmt_expression(last_expr);
+                }
+                last_expr = self.parse_expression()?;
             }
+            if vars.is_empty() {
+                // extra expressions are evaluated but not assigned
+                self.visitor.stmt_expression(last_expr);
+            } else if vars.len() == 1 {
+                let (var, attribs) = vars.pop_front().unwrap();
+                self.visitor.stmt_local(var, attribs, last_expr);
+            } else {
+                self.visitor.stmt_locals_multi(vars.into(), last_expr);
+            }
+        } else {
+            self.visitor.stmt_locals_uninit(vars);
         }
-        self.visitor.stmt_locals(vars, exprs);
         Ok(())
     }
 
@@ -697,9 +746,27 @@ impl<'a, S: Source, V: ParseVisitor + ?Sized> Parser<'a, S, V> {
             while self.try_symbol(",")? {
                 vars.push(self.parse_prefixexpr()?);
             }
+            let mut vars = VecDeque::from(vars);
             self.expect_symbol("=")?;
-            let exprs = self.parse_explist()?;
-            self.visitor.stmt_assignment(vars, exprs);
+            let mut last_expr = self.parse_expression()?;
+            while self.try_symbol(",")? {
+                if let Some(var) = vars.pop_front() {
+                    self.visitor.stmt_assignment(var, last_expr);
+                } else {
+                    // extra expressions are evaluated but not assigned
+                    self.visitor.stmt_expression(last_expr);
+                }
+                last_expr = self.parse_expression()?;
+            }
+            if vars.is_empty() {
+                // extra expressions are evaluated but not assigned
+                self.visitor.stmt_expression(last_expr);
+            } else if vars.len() == 1 {
+                let var = vars.pop_front().unwrap();
+                self.visitor.stmt_assignment(var, last_expr);
+            } else {
+                self.visitor.stmt_assignment_multi(vars.into(), last_expr);
+            }
         } else {
             self.visitor.stmt_expression(expr);
         }
@@ -758,7 +825,7 @@ impl<'a, S: Source, V: ParseVisitor + ?Sized> Parser<'a, S, V> {
             // exp ::= ... (see `parse_simpleexpr`)
             self.parse_simpleexpr()?
         };
-        
+
         // exp ::= exp binop exp
         while let Some((op, mut precedence)) = self.try_infix_op(base_precedence)? {
             if op.is_right_associative() {
@@ -852,7 +919,7 @@ impl<'a, S: Source, V: ParseVisitor + ?Sized> Parser<'a, S, V> {
             Token::Keyword("function") => {
                 self.pop_token();
                 let func_pos = self.lex.position();
-                let proto= self.parse_funcbody(func_pos, false)?;
+                let proto = self.parse_funcbody(func_pos, false)?;
                 Ok(self.visitor.expr_function(proto))
             }
             // exp ::= tableconstructor
@@ -878,7 +945,7 @@ impl<'a, S: Source, V: ParseVisitor + ?Sized> Parser<'a, S, V> {
     ///                   prefixexp ‘:’ Name args
     /// var ::=  Name |
     ///          prefixexp ‘[’ exp ‘]’ |
-    ///          prefixexp ‘.’ Name 
+    ///          prefixexp ‘.’ Name
     /// ```
     fn parse_prefixexpr(&mut self) -> Result<V::Expr, Error<S::Error, V::Error>> {
         // Name | '(' exp ')'
@@ -896,7 +963,7 @@ impl<'a, S: Source, V: ParseVisitor + ?Sized> Parser<'a, S, V> {
                     e = self.visitor.expr_index(e, i)
                 }
                 // prefixexp ::= var
-                // var ::= prefixexp ‘.’ Name 
+                // var ::= prefixexp ‘.’ Name
                 Token::Symbol(".") => {
                     self.pop_token();
                     let n = self.expect_name()?;
@@ -915,7 +982,7 @@ impl<'a, S: Source, V: ParseVisitor + ?Sized> Parser<'a, S, V> {
                 // functioncall ::= prefixexp args
                 Token::Symbol("(" | "{") | Token::String(_) => {
                     let args = self.parse_args()?;
-                    e = self.visitor.expr_call(e,  args, false)
+                    e = self.visitor.expr_call(e, args, false)
                 }
                 // end of prefixexp
                 _ => return Ok(e),
@@ -957,7 +1024,7 @@ impl<'a, S: Source, V: ParseVisitor + ?Sized> Parser<'a, S, V> {
     /// tableconstructor ::= '{' [fieldlist] '}'
     /// fieldlist ::= field {fieldsep field} [fieldsep]
     /// ```
-    fn parse_table(&mut self) -> Result<V::Expr, Error<S::Error,V::Error>> {
+    fn parse_table(&mut self) -> Result<V::Expr, Error<S::Error, V::Error>> {
         self.expect_symbol("{")?;
         let open_pos = self.lex.position();
         self.visitor.expr_table_begin();
@@ -985,7 +1052,7 @@ impl<'a, S: Source, V: ParseVisitor + ?Sized> Parser<'a, S, V> {
     ///           Name '=' exp |
     ///           exp
     /// ```
-    fn parse_field(&mut self) -> Result<(), Error<S::Error,V::Error>> {
+    fn parse_field(&mut self) -> Result<(), Error<S::Error, V::Error>> {
         match self.peek_token()? {
             // field ::= '[' exp ']' '=' exp
             Token::Symbol("[") => {
@@ -1002,7 +1069,9 @@ impl<'a, S: Source, V: ParseVisitor + ?Sized> Parser<'a, S, V> {
             Token::Name(_) => {
                 let name_token = self.pop_token();
                 if self.try_symbol("=")? {
-                    let Token::Name(n) = name_token else { unreachable!() };
+                    let Token::Name(n) = name_token else {
+                        unreachable!()
+                    };
                     let e2 = self.parse_expression()?;
                     self.visitor.expr_table_field_named(n, e2);
                     return Ok(());
@@ -1061,9 +1130,7 @@ impl<'a, S: Source, V: ParseVisitor + ?Sized> Parser<'a, S, V> {
     fn parse_args(&mut self) -> Result<Vec<V::Expr>, Error<S::Error, V::Error>> {
         match self.peek_token()? {
             // args ::= '(' [explist] ')'
-            Token::Symbol("(") => {
-                self.parse_arglist()
-            }
+            Token::Symbol("(") => self.parse_arglist(),
             // args ::= tableconstructor
             Token::Symbol("{") => {
                 let e = self.parse_table()?;
@@ -1075,12 +1142,10 @@ impl<'a, S: Source, V: ParseVisitor + ?Sized> Parser<'a, S, V> {
                 Ok(vec![self.visitor.expr_string(s)])
             }
             // error branch
-            t => {
-                Err(Error::ParseError(ParseError::UnexpectedToken {
-                    got: t.name(),
-                    expected: "arguments",
-                }))
-            }
+            t => Err(Error::ParseError(ParseError::UnexpectedToken {
+                got: t.name(),
+                expected: "arguments",
+            })),
         }
     }
 
@@ -1152,12 +1217,17 @@ impl<'a, S: Source, V: ParseVisitor + ?Sized> Parser<'a, S, V> {
     /// ```ebnf
     /// funcbody ::= '(' [parlist] ')' block end
     /// ```
-    fn parse_funcbody(&mut self, begin_pos: Position, is_method: bool) -> Result<V::Proto, Error<S::Error, V::Error>> {
+    fn parse_funcbody(
+        &mut self,
+        begin_pos: Position,
+        is_method: bool,
+    ) -> Result<V::Proto, Error<S::Error, V::Error>> {
         self.expect_symbol("(")?;
         // [parlist]
         let params = self.parse_parlist()?;
         self.expect_symbol(")")?;
-        self.visitor.enter_function(is_method, params.variadic, params.names);
+        self.visitor
+            .enter_function(is_method, params.variadic, params.names);
         self.parse_block()?;
         self.expect_match("end", "function", begin_pos)?;
         Ok(self.visitor.leave_function())
@@ -1230,7 +1300,10 @@ mod tests {
         let expr = Parser::new(&mut lexer, &mut visitor).parse_expression();
         assert_eq!(
             Ok(Expression::Infix(
-                Box::new(Expression::Field(Box::new(Expression::Var("t1".to_string())), "n".to_string())),
+                Box::new(Expression::Field(
+                    Box::new(Expression::Var("t1".to_string())),
+                    "n".to_string()
+                )),
                 InfixOp::Eq,
                 Box::new(Expression::Infix(
                     Box::new(Expression::Infix(
@@ -1265,18 +1338,20 @@ mod tests {
         let a = parser.parse_statement();
         assert_eq!(Ok(()), a);
         assert_eq!(
-            Some(&Statement::Expression(Box::new(Expression::FunctCall(Box::new(FunctionCall {
-                prefix: Expression::Var("assert".to_string()),
-                method: String::new(),
-                args: vec![Expression::Infix(
-                    Box::new(Expression::Field(
-                        Box::new(Expression::Var("t1".to_string())),
-                        "n".to_string()
-                    )),
-                    InfixOp::Eq,
-                    Box::new(Expression::Number(Number::Integer(1)))
-                )],
-            }))))),
+            Some(&Statement::Expression(Box::new(Expression::FunctCall(
+                Box::new(FunctionCall {
+                    prefix: Expression::Var("assert".to_string()),
+                    method: String::new(),
+                    args: vec![Expression::Infix(
+                        Box::new(Expression::Field(
+                            Box::new(Expression::Var("t1".to_string())),
+                            "n".to_string()
+                        )),
+                        InfixOp::Eq,
+                        Box::new(Expression::Number(Number::Integer(1)))
+                    )],
+                })
+            )))),
             parser.visitor.last_stmt()
         );
         let b = parser.parse_statement();
@@ -1288,11 +1363,13 @@ mod tests {
                     Expression::Number(Number::Integer(2)),
                     Expression::Field(Box::new(Expression::Var("t1".to_string())), "n".to_string())
                 ],
-                block: vec![Statement::Expression(Box::new(Expression::FunctCall(Box::new(FunctionCall {
-                    prefix: Expression::Var("assert".to_string()),
-                    method: String::new(),
-                    args: vec![Expression::Boolean(true)]
-                }))))],
+                block: vec![Statement::Expression(Box::new(Expression::FunctCall(
+                    Box::new(FunctionCall {
+                        prefix: Expression::Var("assert".to_string()),
+                        method: String::new(),
+                        args: vec![Expression::Boolean(true)]
+                    })
+                )))],
             }),
             parser.visitor.last_stmt()
         );

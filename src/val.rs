@@ -78,7 +78,7 @@ impl TypeTag {
     }
 }
 
-#[derive(Copy,Clone)] // TODO: check this
+#[derive(Copy, Clone)] // TODO: check this
 #[repr(C, align(8))]
 pub union Value {
     i: i64,
@@ -94,9 +94,15 @@ impl Value {
     pub const FALSE: Self = Self::primitive(TypeTag::False);
     pub const TRUE: Self = Self::primitive(TypeTag::True);
 
-    pub const NAN: Self = Self { u: 0xfff8_0000_0000_0000 }; 
-    pub const INFTY: Self = Self { u: 0x7ff0_0000_0000_0000 }; 
-    pub const MINUS_INFTY: Self = Self { u: 0xfff0_0000_0000_0000 }; 
+    pub const NAN: Self = Self {
+        u: 0xfff8_0000_0000_0000,
+    };
+    pub const INFTY: Self = Self {
+        u: 0x7ff0_0000_0000_0000,
+    };
+    pub const MINUS_INFTY: Self = Self {
+        u: 0xfff0_0000_0000_0000,
+    };
 
     #[inline]
     const fn tagged(tag: TypeTag, v: u64) -> Self {
@@ -128,9 +134,9 @@ impl Value {
     pub const fn f64(f: f64) -> Self {
         let i: i64 = f.to_bits().cast_signed();
         assert!(((i >> 47) as u32) < !13);
-        Self{ f }
+        Self { f }
     }
-    
+
     #[inline]
     pub const fn u32(u: u32) -> Self {
         Self::tagged(TypeTag::Int, u as u64)
@@ -152,10 +158,13 @@ impl Value {
 
     #[inline]
     pub const fn i64(i: i64) -> Option<Self> {
-        if i < (!(!0u64 >> 18)) as i64 || i > ((!0u64 >> 18) as i64){
+        if i < (!(!0u64 >> 18)) as i64 || i > ((!0u64 >> 18) as i64) {
             None
         } else {
-            Some(Self::tagged(TypeTag::Int, (i as i64) as u64 & (!0u64 >> 17)))
+            Some(Self::tagged(
+                TypeTag::Int,
+                i as u64 & (!0u64 >> 17),
+            ))
         }
     }
 

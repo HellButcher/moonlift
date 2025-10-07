@@ -1,6 +1,9 @@
 use std::{fmt, fmt::Display, io, str::Utf8Error};
 
-use crate::{ast::Number, source::{BytesSource, ReadSource, Source}};
+use crate::{
+    ast::Number,
+    source::{BytesSource, ReadSource, Source},
+};
 
 #[derive(thiserror::Error, Debug, PartialEq)]
 pub enum LexerError<E> {
@@ -191,24 +194,16 @@ impl<S: Source> Lexer<S> {
                 }
             }
             b'<' => match self.source.read_next()? {
-                Some(b'<') => {
-                    Ok(Token::Symbol("<<"))
-                }
-                Some(b'=') => {
-                    Ok(Token::Symbol("<="))
-                }
+                Some(b'<') => Ok(Token::Symbol("<<")),
+                Some(b'=') => Ok(Token::Symbol("<=")),
                 _ => {
                     self.source.unwind();
                     Ok(Token::Symbol("<"))
                 }
             },
             b'>' => match self.source.read_next()? {
-                Some(b'>') => {
-                    Ok(Token::Symbol(">>"))
-                }
-                Some(b'=') => {
-                    Ok(Token::Symbol(">="))
-                }
+                Some(b'>') => Ok(Token::Symbol(">>")),
+                Some(b'=') => Ok(Token::Symbol(">=")),
                 _ => {
                     self.source.unwind();
                     Ok(Token::Symbol(">"))
@@ -238,8 +233,8 @@ impl<S: Source> Lexer<S> {
                     loop {
                         c = self.source.read_next()?;
                         let Some(v) = c.and_then(Self::decimal_digit_value) else {
-                                break;
-                            };
+                            break;
+                        };
                         div *= 10f64;
                         f *= 10f64;
                         f += v as f64;
@@ -261,18 +256,10 @@ impl<S: Source> Lexer<S> {
                     Ok(Token::Symbol("."))
                 }
             },
-            b'+' => {
-                Ok(Token::Symbol("+"))
-            }
-            b'*' => {
-                Ok(Token::Symbol("*"))
-            }
-            b'%' => {
-                Ok(Token::Symbol("%"))
-            }
-            b'^' => {
-                Ok(Token::Symbol("^"))
-            }
+            b'+' => Ok(Token::Symbol("+")),
+            b'*' => Ok(Token::Symbol("*")),
+            b'%' => Ok(Token::Symbol("%")),
+            b'^' => Ok(Token::Symbol("^")),
             b'#' => {
                 if self.line == 1 && self.source.pos() == 1 {
                     // comment in first line (if file starts with '#').
@@ -282,33 +269,15 @@ impl<S: Source> Lexer<S> {
                 }
                 Ok(Token::Symbol("#"))
             }
-            b'&' => {
-                Ok(Token::Symbol("&"))
-            }
-            b'|' => {
-                Ok(Token::Symbol("|"))
-            }
-            b'(' => {
-                Ok(Token::Symbol("("))
-            }
-            b')' => {
-                Ok(Token::Symbol(")"))
-            }
-            b'{' => {
-                Ok(Token::Symbol("{"))
-            }
-            b'}' => {
-                Ok(Token::Symbol("}"))
-            }
-            b';' => {
-                Ok(Token::Symbol(";"))
-            }
-            b',' => {
-                Ok(Token::Symbol(","))
-            }
-            b']' => {
-                Ok(Token::Symbol("]"))
-            }
+            b'&' => Ok(Token::Symbol("&")),
+            b'|' => Ok(Token::Symbol("|")),
+            b'(' => Ok(Token::Symbol("(")),
+            b')' => Ok(Token::Symbol(")")),
+            b'{' => Ok(Token::Symbol("{")),
+            b'}' => Ok(Token::Symbol("}")),
+            b';' => Ok(Token::Symbol(";")),
+            b',' => Ok(Token::Symbol(",")),
+            b']' => Ok(Token::Symbol("]")),
             b'a'..=b'z' | b'A'..=b'Z' | b'_' => {
                 self.value.clear();
                 self.value.push(c);
@@ -629,10 +598,12 @@ impl<S: Source> Lexer<S> {
                     }
                     b'x' => {
                         // hex
-                        let Some(v) = self.source.read_next()?.and_then(Self::hex_digit_value) else {
+                        let Some(v) = self.source.read_next()?.and_then(Self::hex_digit_value)
+                        else {
                             return Err(LexerError::InvalidEscapeSequence(c as char));
                         };
-                        let Some(v2) = self.source.read_next()?.and_then(Self::hex_digit_value) else {
+                        let Some(v2) = self.source.read_next()?.and_then(Self::hex_digit_value)
+                        else {
                             return Err(LexerError::InvalidEscapeSequence(c as char));
                         };
                         v << 4 | v2
@@ -642,13 +613,16 @@ impl<S: Source> Lexer<S> {
                         if !matches!(self.source.read_next()?, Some(b'{')) {
                             return Err(LexerError::InvalidEscapeSequence(c as char));
                         }
-                        let mut v = if let Some(v)= self.source.read_next()?.and_then(Self::hex_digit_value) {
+                        let mut v = if let Some(v) =
+                            self.source.read_next()?.and_then(Self::hex_digit_value)
+                        {
                             v as u32
                         } else {
                             return Err(LexerError::InvalidEscapeSequence(c as char));
                         };
                         for _ in 1..8 {
-                            let Some(v2) = self.source.read_next()?.and_then(Self::hex_digit_value) else {
+                            let Some(v2) = self.source.read_next()?.and_then(Self::hex_digit_value)
+                            else {
                                 self.source.unwind();
                                 break;
                             };
@@ -661,7 +635,7 @@ impl<S: Source> Lexer<S> {
                         let Some(chr) = char::from_u32(v) else {
                             return Err(LexerError::InvalidEscapeSequence(c as char));
                         };
-                        let mut buf = [0u8;4];
+                        let mut buf = [0u8; 4];
                         for c in chr.encode_utf8(&mut buf).as_bytes().iter().copied() {
                             self.value.push(c);
                         }

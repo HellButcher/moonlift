@@ -1,6 +1,5 @@
 use std::{convert::Infallible, io};
 
-
 pub trait Source {
     type Error: std::error::Error;
     fn read_next(&mut self) -> Result<Option<u8>, Self::Error>;

@@ -3,12 +3,15 @@
 use core::panic;
 
 use crate::{
-    ast::*, codegen_state::{
-        BytecodeGenerator, CodeGenerationError, ConstValue, DischargedRegOrJmp, Expr, ExprValue, JumpList, Proto, ProtoGenerator
-    }, parser::{ParseVisitor, ParseVisitorOutput}
+    ast::*,
+    codegen_state::{
+        BytecodeGenerator, CodeGenerationError, ConstValue, DischargedRegOrJmp, Expr, ExprValue,
+        JumpList, Proto, ProtoGenerator,
+    },
+    parser::{ParseVisitor, ParseVisitorOutput},
 };
 
-impl BytecodeGenerator {
+impl ProtoGenerator {
     fn assign_lvalue(&mut self, lvalue: Expr, mut rvalue: Expr) {
         if lvalue.is_void() || rvalue.is_void() || self.dead {
             return;
@@ -22,23 +25,32 @@ impl BytecodeGenerator {
                 self.emit(op![GSet(val_slot, key_const)]);
                 self.expr_free(&rvalue.value);
             }
-            ExprValue::Idx { table_slot, key_slot } => {
+            ExprValue::Idx {
+                table_slot,
+                key_slot,
+            } => {
                 let val_slot = self.expr_to_any_reg(&mut rvalue).unwrap();
                 self.emit(op![TSetV(val_slot, table_slot, key_slot)]);
                 self.expr_free(&rvalue.value);
-                // TODO: how to free table_slot and key_slot?
-            },
-            ExprValue::IdxI { table_slot, key_value } => {
+                self.frame.free2(table_slot, key_slot);
+            }
+            ExprValue::IdxI {
+                table_slot,
+                key_value,
+            } => {
                 let val_slot = self.expr_to_any_reg(&mut rvalue).unwrap();
                 self.emit(op![TSetB(val_slot, table_slot, key_value)]);
                 self.expr_free(&rvalue.value);
-                // TODO: how to free table_slot
+                self.frame.free(table_slot);
             }
-            ExprValue::IdxStr { table_slot, key_const } => {
+            ExprValue::IdxStr {
+                table_slot,
+                key_const,
+            } => {
                 let val_slot = self.expr_to_any_reg(&mut rvalue).unwrap();
                 self.emit(op![TSetS(val_slot, table_slot, key_const)]);
                 self.expr_free(&rvalue.value);
-                // TODO: how to free table_slot
+                self.frame.free(table_slot);
             }
             ExprValue::Upval(uv) => {
                 let val_slot = self.expr_to_any_reg(&mut rvalue).unwrap();
@@ -47,6 +59,13 @@ impl BytecodeGenerator {
             }
             _ => panic!("Invalid lvalue in assignment"),
         }
+    }
+
+    fn add_proto(&mut self, proto: Proto) -> u8 {
+        let idx = self.protos.len();
+        assert!(idx < 256, "Too many nested functions");
+        self.protos.push(proto);
+        idx as u8
     }
 }
 
@@ -75,11 +94,9 @@ impl ParseVisitor for BytecodeGenerator {
         self.frame.leave_scope();
     }
 
-    fn enter_expr(&mut self) {
-    }
+    fn enter_expr(&mut self) {}
 
-    fn leave_expr(&mut self) {
-    }
+    fn leave_expr(&mut self) {}
 
     fn expr_number(&mut self, n: Number) -> Self::Expr {
         if self.dead {
@@ -125,10 +142,8 @@ impl ParseVisitor for BytecodeGenerator {
         if self.dead {
             return Expr::Void;
         }
-        // For now, just return a placeholder - full function compilation would be complex
-        // In a real implementation, we'd need to compile the proto into a codegen_state::Proto
-        let _ = proto; // Silence warning
-        let pc = self.emit(op![FNew(0, 0)]); // Placeholder function index
+        let proto = self.add_proto(proto);
+        let pc = self.emit(op![FNew(0, proto as u16)]);
         Expr::Reloc(pc)
     }
 
@@ -160,22 +175,22 @@ impl ParseVisitor for BytecodeGenerator {
                         }
                     }
                 }
-            },
+            }
             UnaryOp::BitNot => {
                 let src_reg = self.expr_to_any_reg(&mut expr).unwrap();
                 self.expr_free(&expr.value);
                 op![BNot(0, src_reg)]
-            },
+            }
             UnaryOp::Minus => {
                 let src_reg = self.expr_to_any_reg(&mut expr).unwrap();
                 self.expr_free(&expr.value);
                 op![UNM(0, src_reg)]
-            },
+            }
             UnaryOp::Len => {
                 let src_reg = self.expr_to_any_reg(&mut expr).unwrap();
                 self.expr_free(&expr.value);
                 op![Len(0, src_reg)]
-            },
+            }
         };
         debug_assert!(!expr.has_jumps()); // TODO: is this correct here?
         let pc = self.emit(instr);
@@ -212,12 +227,17 @@ impl ParseVisitor for BytecodeGenerator {
                 // ensure operand is on stack
                 self.expr_to_next_reg(&mut lhs).unwrap();
                 lhs
-            },
+            }
             _ => lhs,
         }
     }
 
-    fn expr_postfix(&mut self, mut lhs: Self::Expr, op: InfixOp, mut rhs: Self::Expr) -> Self::Expr {
+    fn expr_postfix(
+        &mut self,
+        mut lhs: Self::Expr,
+        op: InfixOp,
+        mut rhs: Self::Expr,
+    ) -> Self::Expr {
         // Handle short-circuiting constant logical operators first
         if lhs.is_void() {
             return rhs;
@@ -243,15 +263,14 @@ impl ParseVisitor for BytecodeGenerator {
                 debug_assert!(!lhs.jump_true.has_jumps());
                 self.concat_jump_list(&mut rhs.jump_false, lhs.jump_false);
                 return rhs;
-            },
+            }
             InfixOp::Or => {
                 debug_assert!(!lhs.jump_false.has_jumps());
                 self.concat_jump_list(&mut rhs.jump_true, lhs.jump_true);
                 return rhs;
-            },
-            _ => {},
+            }
+            _ => {}
         }
-
 
         // Special handling for CONCAT
         if op == InfixOp::Concat {
@@ -259,19 +278,26 @@ impl ParseVisitor for BytecodeGenerator {
             let ExprValue::NonReloc(lhs_reg) = lhs.value else {
                 panic!("Expected lhs to be in next register");
             };
+            self.discharge_vars_mut(&mut rhs.value);
             // Ensure rhs is in the next register
-            let rhs_reg = self.expr_to_next_reg(&mut rhs).unwrap();
-            self.expr_free2(&lhs.value, &rhs.value);
             if let Some(op) = self.bytecode.last_mut() {
-                match_op! {(op) {
+                let r = match_op! {(op) {
                     Cat(_,ref mut b,_) => {
                         debug_assert_eq!(lhs_reg + 1, *b);
                         *b = lhs_reg; // extend existing CONCAT instruction
-                        return rhs;
+                        true
                     },
-                    _ => {},
-                }}
+                    _ => false,
+                }};
+                if r {
+                    self.expr_free2(&lhs.value, &rhs.value);
+                    return rhs;
+                }
             }
+
+            let rhs_reg = self.expr_to_next_reg(&mut rhs).unwrap();
+            self.expr_free2(&lhs.value, &rhs.value);
+
             let pc = self.emit(op![Cat(0, lhs_reg, rhs_reg)]); // concat two values
             return Expr::Reloc(pc);
         }
@@ -351,10 +377,12 @@ impl ParseVisitor for BytecodeGenerator {
 
         // Check if index is a constant that can be optimized
         match &index.value {
-            ExprValue::Const(ConstValue::Int(i)) if *i >= 0 && *i <= 255 => Expr::new(ExprValue::IdxI {
-                table_slot,
-                key_value: *i as u8,
-            }),
+            ExprValue::Const(ConstValue::Int(i)) if *i >= 0 && *i <= 255 => {
+                Expr::new(ExprValue::IdxI {
+                    table_slot,
+                    key_value: *i as u8,
+                })
+            }
             ExprValue::Const(ConstValue::Str(_)) => {
                 let ExprValue::Const(ConstValue::Str(s)) = index.take() else {
                     unreachable!()
@@ -392,7 +420,6 @@ impl ParseVisitor for BytecodeGenerator {
             return Expr::Void;
         }
         let table_slot = self.expr_to_any_reg(&mut expr).unwrap();
-        // TODO: how to free table_slot?
 
         // Field access is always string indexing
         let key_const = self
@@ -408,7 +435,6 @@ impl ParseVisitor for BytecodeGenerator {
             // Too many constants, fall back to normal indexing
             let key_slot = self.frame.alloc_temp();
             self.emit(op![KStr(key_slot, key_const)]);
-            // TODO: how to free key_slot?
             Expr::new(ExprValue::Idx {
                 table_slot,
                 key_slot,
@@ -416,32 +442,8 @@ impl ParseVisitor for BytecodeGenerator {
         }
     }
 
-    fn expr_self(&mut self, mut prefix: Self::Expr, method: String) -> Self::Expr {
-        if prefix.is_void() || self.dead {
-            return Expr::Void;
-        }
-        // Method call: obj:method(...)
-        let table_slot = self.expr_to_any_reg(&mut prefix).unwrap();
-        // TODO: how to free table_slot?
-        let key_const = self
-            .constants
-            .add_string(method.into_bytes().into_boxed_slice())
-            .unwrap();
-        if key_const <= 255 {
-            Expr::new(ExprValue::IdxStr {
-                table_slot,
-                key_const: key_const as u8,
-            })
-        } else {
-            // Too many constants, fall back to normal indexing
-            let key_slot = self.frame.alloc_temp();
-            self.emit(op![KStr(key_slot, key_const)]);
-            // TODO: how to free key_slot?
-            Expr::new(ExprValue::Idx {
-                table_slot,
-                key_slot,
-            })
-        }
+    fn expr_self(&mut self, prefix: Self::Expr, method: String) -> Self::Expr {
+        self.expr_field(prefix, method)
     }
 
     fn expr_call(
@@ -455,14 +457,20 @@ impl ParseVisitor for BytecodeGenerator {
         }
         // Get the function to call
         self.discharge_vars_mut(&mut prefix.value);
+        for (i, arg) in args.iter_mut().enumerate() {
+            self.discharge_vars_mut(&mut arg.value);
+        }
+
+        for (i, arg) in args.iter_mut().enumerate().rev() {
+            self.expr_free(&arg.value);
+        }
+
+        let func_slot = self.expr_to_next_reg(&mut prefix).unwrap();
 
         // Allocate slots for arguments
         let num_args = args.len() as u8;
-        let regs = self.frame.alloc_temps(num_args + 1); // +1 for function itself
-        let func_slot = regs.start;
-        let first_arg = func_slot + 1;
-
-        self.expr_to_reg(&mut prefix, func_slot).unwrap();
+        let regs = self.frame.alloc_temps(num_args); // +1 for function itself
+        let first_arg = regs.start;
 
         // Load arguments into consecutive slots
         for (i, arg) in args.iter_mut().enumerate() {
@@ -473,7 +481,7 @@ impl ParseVisitor for BytecodeGenerator {
         // Emit call instruction
         let pc = self.emit(op![Call(func_slot, num_args + 1, 0)]); // +1 for function itself
 
-        // TODO: free
+        self.frame.free_range(regs); // KEEP 1 for the result
 
         Expr::new(ExprValue::Call(pc))
     }
@@ -485,9 +493,9 @@ impl ParseVisitor for BytecodeGenerator {
         // TODO: table creation needs refactoring
 
         // Create a new table and allocate a slot for it
-        let table_slot = self.frame.alloc_temp();
-        self.emit(op![TNew(table_slot, 0)]); // Empty table for now
-                                             // We would need to track this table slot somehow, for now simplified
+        // let table_slot = self.frame.alloc_temp();
+        // self.emit(op![TNew(table_slot, 0)]); // Empty table for now
+        //                                      // We would need to track this table slot somehow, for now simplified
     }
 
     fn expr_table_field_index(&mut self, _key: Self::Expr, _value: Self::Expr) {
@@ -561,7 +569,8 @@ impl ParseVisitor for BytecodeGenerator {
     }
 
     fn stmt_endif(&mut self) {
-        let (was_dead, iforelse_was_dead, if_expr_jumps) = self.ifjumps.pop().expect("Not inside if");
+        let (was_dead, iforelse_was_dead, if_expr_jumps) =
+            self.ifjumps.pop().expect("Not inside if");
         self.dead = was_dead || self.dead && iforelse_was_dead;
         if self.dead {
             return;
@@ -626,16 +635,39 @@ impl ParseVisitor for BytecodeGenerator {
         self.leave_scope();
     }
 
-    fn stmt_locals(&mut self, names: Vec<(String, String)>, exprs: Vec<Self::Expr>) {
+    fn stmt_locals_uninit(&mut self, names: Vec<(String, String)>) {
         if self.dead {
             return;
         }
-        let mut vars = Vec::with_capacity(names.len());
-        for (name, _attrib) in names {
-            // TODO: attributes
-            vars.push(Expr::new(ExprValue::Local(self.frame.alloc(name))));
+        for (name, attrib) in names {
+            let reg = self.frame.alloc_with_attribs(name, attrib);
+            self.emit_load_prim(reg, 1, 1); // 1 = nil
         }
-        self.stmt_assignment(vars, exprs);
+    }
+
+    fn stmt_locals_multi(&mut self, names: Vec<(String, String)>, mut expr: Self::Expr) {
+        if self.dead {
+            return;
+        }
+        self.discharge_vars_mut(&mut expr.value);
+        self.expr_free(&expr.value);
+        let mut vars = Vec::with_capacity(names.len());
+        for (name, attrib) in names {
+            let reg = self.frame.alloc_with_attribs(name, attrib);
+            vars.push(Expr::new(ExprValue::Local(reg)));
+        }
+        self.stmt_assignment_multi(vars, expr);
+    }
+
+    fn stmt_local(&mut self, var: String, attribs: String, mut expr: Self::Expr) {
+        if self.dead {
+            return;
+        }
+        self.discharge_vars_mut(&mut expr.value);
+        self.expr_free(&expr.value);
+        let reg = self.frame.alloc_with_attribs(var, attribs);
+        let mut expr = expr;
+        self.expr_to_reg(&mut expr, reg).unwrap();
     }
 
     fn stmt_return(&mut self, mut exprs: Vec<Self::Expr>) {
@@ -673,7 +705,7 @@ impl ParseVisitor for BytecodeGenerator {
             var = self.expr_field(var, part);
         }
         let func = self.expr_function(proto);
-        self.stmt_assignment(vec![var], vec![func]);
+        self.stmt_assignment(var, func);
     }
 
     fn stmt_local_function(&mut self, name: String, proto: Self::Proto) {
@@ -685,28 +717,53 @@ impl ParseVisitor for BytecodeGenerator {
         self.expr_to_reg(&mut func, var).unwrap();
     }
 
-    fn stmt_assignment(&mut self, vars: Vec<Self::Expr>, exprs: Vec<Self::Expr>) {
+    fn stmt_assignment(&mut self, var: Self::Expr, expr: Self::Expr) {
         if self.dead {
             return;
         }
-        if vars.len() == exprs.len() {
-            for (var, expr) in vars.into_iter().zip(exprs.into_iter()) {
-                self.assign_lvalue(var, expr);
+        self.assign_lvalue(var, expr);
+        self.frame.check_clean();
+    }
+
+    fn stmt_assignment_multi(&mut self, vars: Vec<Self::Expr>, mut expr: Self::Expr) {
+        if self.dead {
+            return;
+        }
+        if let Some(range) = self.patch_ret_n(&mut expr.value, vars.len() as u8) {
+            // multi returning expression, assign all results
+            // TODO
+            self.frame.free_range(range);
+            for mut var in vars {
+                self.expr_to_any_reg(&mut var).unwrap();
+                self.expr_free(&var.value);
             }
-        } else if exprs.len() == 1 {
-            // TODO: unpack variadic
-            todo!("Unpacking variadic assignments not implemented");
-        } else if !exprs.is_empty() {
-            panic!("Mismatched number of local variables and expressions");
+        } else {
+            // has not multiple return values: simple one-to-one assignment (rest is filled with `nil`)
+            let mut vars_it = vars.into_iter();
+            self.assign_lvalue(vars_it.next().unwrap(), expr);
+            for var in vars_it {
+                self.assign_lvalue(var, Expr::new(ExprValue::Nil));
+            }
         }
     }
 
-    fn stmt_expression(&mut self, mut call: Self::Expr) {
+    fn stmt_expression(&mut self, mut expr: Self::Expr) {
         if self.dead {
             return;
         }
-        self.expr_to_any_reg(&mut call).unwrap();
-        self.expr_free(&call.value);
+        let a = match expr.value {
+            ExprValue::Call(pc) => {
+                match_op! {(&mut self[pc]) {
+                    Call(a,_,ref mut c) => {
+                        *c = 1; // 1 = no results
+                        a
+                    },
+                    _ => panic!("Expression statement is not a function call"),
+                }}
+            }
+            _ => self.expr_to_any_reg(&mut expr).unwrap(),
+        };
+        self.frame.free(a);
     }
 
     fn enter_function(&mut self, _is_method: bool, is_vararg: bool, args: Vec<String>) {
