@@ -887,24 +887,61 @@ define_opcodes! {
     },
 
     // Numeric 'for' loop - init
-    // check values and prepare counters; f not to run then pc+=D+1
+    // check values and prepare counters; if not to run then pc+=D+1
     ForI(a: base, d: jump) {
-      // TODO
-        todo!();
+        let i = vm.get(a);
+        let limit = vm.get(a + 1);
+        let step = vm.get(a + 2);
+        let cond = if (step >= 0) {
+            i > limit
+        } else {
+            i < limit
+        }
+        if cond {
+            vm.pc += (d as isize + 1) as usize;
+        } else {
+            vm.set(a + 3, i);
+        }
     },
     // Numeric 'for' loop - loop
     // update counters; if loop continues then pc-=D;
-    ForL(a: base, d: jump) {      // TODO
-        todo!();
+    ForL(a: base, d: jump) {
+        let mut i = vm.get(a);
+        let limit = vm.get(a + 1);
+        let step = vm.get(a + 2);
+        i += step;
+        vm.set(a, i);
+        let cond = if (step >= 0) {
+            i > limit
+        } else {
+            i < limit
+        }
+        if cond {
+            vm.pc += (d as isize) as usize;
+        } else {
+            vm.set(a + 3, i);
+        }
     },
     // Call iterator: A, A+1, A+2 = A-3, A-2, A-1; A, ..., A+B-2 = A(A+1, A+2)
-    IterC(a: base, b: lit, c: lit) { // TODO
+    IterC(a: base, b: lit, c: lit) {
+        vm.set(a, vm.get(a - 3));
+        vm.set(a + 1, vm.get(a - 2));
+        vm.set(a + 2, vm.get(a - 1));
+        // TODO: call(base=a, nargs=2, nret=b+2)
         todo!();
+    },
+    // Iterator loop jump: if(A != nil) (A-1) = A; else pc+=D;
+    IterL(a: base, d: jump) {
+        let val = vm.get(a);
+        if val.is_nil() {
+            vm.pc += (d as isize) as usize;
+        } else {
+            vm.set(a - 1, val);
+        }
     },
     // Jump
     Jmp(a: rbase, d: jump) {
-      // TODO
-        todo!();
+        vm.pc += (d as isize) as usize;
     },
 
     // Vararg: A, ..., A+B-2 = ...

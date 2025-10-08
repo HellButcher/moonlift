@@ -5,7 +5,7 @@ use crate::{
     parser::{ParseVisitor, ParseVisitorOutput},
 };
 
-enum Loop {
+pub enum Loop {
     None,
     While(Box<ast::Expression>),
     Repeat(Box<ast::Expression>),
@@ -20,7 +20,6 @@ enum If {
 
 pub struct AstVisitor {
     blocks: Vec<ast::Block>,
-    loops: Vec<Loop>,
     ifs: Vec<If>,
     functions: Vec<(bool, ast::Params)>,
 }
@@ -114,7 +113,6 @@ impl AstVisitor {
     pub fn new() -> Self {
         Self {
             blocks: vec![ast::Block::new()],
-            loops: Vec::new(),
             ifs: Vec::new(),
             functions: Vec::new(),
         }
@@ -125,14 +123,8 @@ impl AstVisitor {
     pub fn leave_block(&mut self) -> ast::Block {
         self.blocks.pop().unwrap()
     }
-    fn current_block(&self) -> &ast::Block {
-        self.blocks.last().unwrap()
-    }
     fn current_block_mut(&mut self) -> &mut ast::Block {
         self.blocks.last_mut().unwrap()
-    }
-    fn current_loop_mut(&mut self) -> &mut Loop {
-        self.loops.last_mut().unwrap()
     }
     fn push_stmt(&mut self, stmt: ast::Statement) {
         self.current_block_mut().push(stmt);
@@ -162,6 +154,7 @@ impl ParseVisitor for AstVisitor {
     type ExprList = Vec<ast::Expression>;
     type ExprCall = ast::FunctionCall;
     type ExprTable = Vec<ast::Field>;
+    type Loop = Loop;
     type Proto = ast::Proto;
 
     fn stmt_label(&mut self, label: String) {
@@ -193,31 +186,32 @@ impl ParseVisitor for AstVisitor {
         self.push_stmt(stmt);
     }
 
-    fn stmt_loop(&mut self) {
-        self.loops.push(Loop::None);
+    fn stmt_loop_begin(&mut self) -> Self::Loop {
         self.enter_block();
+        Loop::None
     }
 
-    fn stmt_loop_while(&mut self, condition: Self::Expr) {
-        self.current_loop_mut().while_cond(condition);
+    fn stmt_loop_while(&mut self, current_loop: &mut Self::Loop, condition: Self::Expr) {
+        current_loop.while_cond(condition);
     }
 
-    fn stmt_loop_repeat_until(&mut self, condition: Self::Expr) {
-        self.current_loop_mut().repeat_until_cond(condition);
+    fn stmt_loop_repeat_until(&mut self, current_loop: &mut Self::Loop, condition: Self::Expr) {
+        current_loop.repeat_until_cond(condition);
     }
 
-    fn stmt_loop_for(&mut self, var: String, exprs: Self::ExprList) {
-        self.current_loop_mut().fornum(var, exprs);
+    fn stmt_loop_for_begin(&mut self, var: String, exprs: Self::ExprList) -> Self::Loop {
+        self.enter_block();
+        Loop::ForNum(var, exprs)
     }
 
-    fn stmt_loop_foreach(&mut self, vars: Vec<String>, exprs: Self::ExprList) {
-        self.current_loop_mut().foreach(vars, exprs);
+    fn stmt_loop_foreach_begin(&mut self, vars: Vec<String>, exprs: Self::ExprList) -> Self::Loop {
+        self.enter_block();
+        Loop::ForEach(vars, exprs)
     }
 
-    fn stmt_endloop(&mut self) {
+    fn stmt_loop_end(&mut self, current_loop: Self::Loop) {
         let block = self.leave_block();
-        let stmt = self.loops.pop().expect("no loop to end").end(block);
-        self.push_stmt(stmt);
+        self.push_stmt(current_loop.end(block));
     }
 
     fn stmt_do(&mut self) {

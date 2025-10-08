@@ -6,7 +6,7 @@ use crate::{
     ast::*,
     codegen_state::{
         BytecodeGenerator, CodeGenerationError, ConstValue, DischargedRegOrJmp, Expr, ExprValue,
-        JumpList, Proto, ProtoGenerator,
+        JumpList, ProgramCounter, Proto, ProtoGenerator,
     },
     parser::{ParseVisitor, ParseVisitorOutput},
 };
@@ -69,6 +69,12 @@ impl ProtoGenerator {
     }
 }
 
+pub struct Loop {
+    pub was_dead: bool,
+    pub loop_start: ProgramCounter,
+    pub end_jumps: JumpList,
+}
+
 impl ParseVisitorOutput for BytecodeGenerator {
     type Output = Proto;
 
@@ -86,6 +92,7 @@ impl ParseVisitor for BytecodeGenerator {
     type ExprList = (Expr, u8);
     type ExprCall = (Expr, u8);
     type ExprTable = Expr;
+    type Loop = Loop;
     type Error = CodeGenerationError;
     type Proto = Proto;
 
@@ -590,83 +597,133 @@ impl ParseVisitor for BytecodeGenerator {
         self.patch_jmp_list_here(if_expr_jumps);
     }
 
-    fn stmt_loop(&mut self) {
-        let dead = self.dead;
+    fn stmt_loop_begin(&mut self) -> Self::Loop {
         let pc = self.pc();
-        self.loops.push((dead, pc, JumpList::NO_JUMP));
+        Loop {
+            was_dead: self.dead,
+            loop_start: pc,
+            end_jumps: JumpList::NO_JUMP,
+        }
     }
 
-    fn stmt_loop_while(&mut self, mut condition: Self::Expr) {
+    fn stmt_loop_while(&mut self, current_loop: &mut Self::Loop, mut condition: Self::Expr) {
         if self.dead {
             return;
         }
         let end_jump = self.go_if_true(&mut condition);
-        let (_was_dead, _loop_start, mut end_jumps) = *self.loops.last().expect("not inside loop");
-        self.concat_jump_list(&mut end_jumps, end_jump);
-        self.loops.last_mut().unwrap().2 = end_jumps;
+        self.concat_jump_list(&mut current_loop.end_jumps, end_jump);
     }
 
-    fn stmt_loop_repeat_until(&mut self, mut condition: Self::Expr) {
+    fn stmt_loop_repeat_until(&mut self, current_loop: &mut Self::Loop, mut condition: Self::Expr) {
         if self.dead {
             return;
         }
-        let (_was_dead, loop_start, end_jumps) = *self.loops.last().expect("not inside loop");
-        debug_assert!(!end_jumps.has_jumps());
+        debug_assert!(!current_loop.end_jumps.has_jumps());
         let continue_jump = self.go_if_false(&mut condition);
-        self.patch_jmp_list(continue_jump, loop_start);
+        self.patch_jmp_list(continue_jump, current_loop.loop_start);
+        current_loop.loop_start = ProgramCounter::NO_JUMP;
     }
 
-    fn stmt_loop_for(&mut self, varname: String, (base, nargs): Self::ExprList) {
+    fn stmt_loop_for_begin(
+        &mut self,
+        varname: String,
+        (base, nargs): Self::ExprList,
+    ) -> Self::Loop {
         if self.dead {
-            return;
+            return Loop {
+                was_dead: true,
+                loop_start: ProgramCounter::NO_JUMP,
+                end_jumps: JumpList::NO_JUMP,
+            };
         }
+        debug_assert!(nargs >= 2);
         let ExprValue::NonReloc(base_reg) = base.value else {
             panic!("Expected base to be in next register");
         };
         self.frame.free_range(base_reg..base_reg + nargs); // Temporary free
-                                                           // TODO: parse expressions as singular items
 
+        let varname_idx = format!("(for idx {})", varname);
         let varname_limit = format!("(for limit {})", varname);
         let varname_step = format!("(for limit {})", varname);
-        let _var = self.frame.alloc(varname);
-        let _limit = self.frame.alloc(varname_limit);
-        let _step = self.frame.alloc(varname_step);
+        let reg_idx = self.frame.alloc(varname_idx);
+        debug_assert_eq!(base_reg, reg_idx);
+        let reg_limit = self.frame.alloc(varname_limit);
+        debug_assert_eq!(base_reg + 1, reg_limit);
+        let reg_step = self.frame.alloc(varname_step);
+        debug_assert_eq!(base_reg + 2, reg_limit);
+        if nargs < 3 {
+            // define step = 1
+            self.emit(op![KShort(reg_step, 1)]);
+        }
 
-        // TODO: implement for-loop
-        todo!("For-Loop not implemented");
+        let reg_var = self.frame.alloc(varname);
+        debug_assert_eq!(base_reg + 3, reg_var);
+
+        let loop_start = self.emit(op![ForL(reg_idx, !0)]);
+        Loop {
+            was_dead: false,
+            loop_start,
+            end_jumps: JumpList(loop_start),
+        }
     }
 
-    fn stmt_loop_foreach(&mut self, vars: Vec<String>, (base, nargs): Self::ExprList) {
+    fn stmt_loop_foreach_begin(
+        &mut self,
+        vars: Vec<String>,
+        (base, nargs): Self::ExprList,
+    ) -> Self::Loop {
         if self.dead {
-            return;
+            return Loop {
+                was_dead: true,
+                loop_start: ProgramCounter::NO_JUMP,
+                end_jumps: JumpList::NO_JUMP,
+            };
         }
+        debug_assert!(nargs >= 1);
         let ExprValue::NonReloc(base_reg) = base.value else {
             panic!("Expected base to be in next register");
         };
         self.frame.free_range(base_reg..base_reg + nargs); // Temporary free
                                                            // TODO: parse expressions as singular items
 
-        let _gen = self.frame.alloc(String::from("(for gen)"));
-        let _state = self.frame.alloc(String::from("(for state)"));
-        let _control = self.frame.alloc(String::from("(for control)"));
-        let _toclose = self.frame.alloc(String::from("(for toclose)"));
-        let _vars_begin = self.frame.next();
+        let reg_gen = self.frame.alloc(String::from("(for gen)"));
+        debug_assert_eq!(base_reg, reg_gen);
+        let reg_state = self.frame.alloc(String::from("(for state)"));
+        debug_assert_eq!(base_reg + 1, reg_state);
+        let reg_ctrl = self.frame.alloc(String::from("(for ctrl)"));
+        debug_assert_eq!(base_reg + 2, reg_ctrl);
+        let reg_toclose = self.frame.alloc(String::from("(for toclose)"));
+        debug_assert_eq!(base_reg + 3, reg_toclose);
+
+        if nargs < 4 {
+            // TODO: instead check, if last expr is CALL or VArg, and propagate results directly
+            // define toclose = 0
+            self.emit_load_prim(reg_state, 1, 4 - nargs); // 1=nil
+        }
+
+        let nvars = vars.len() as u8;
+        let vars_begin = self.frame.next();
         for var in vars {
             self.frame.alloc(var);
         }
-        let _vars_end = self.frame.next();
+        let vars_end = self.frame.next();
+        debug_assert_eq!(vars_end - vars_begin, nvars);
 
-        // TODO: implement foreach-loop
-        todo!("ForEach-Loop not implemented");
+        let loop_start = self.emit(op![IterC(vars_begin, nvars - 1, 0)]);
+        let pc_itr = self.emit(op![IterL(vars_begin, !0)]);
+        Loop {
+            was_dead: false,
+            loop_start,
+            end_jumps: JumpList(pc_itr),
+        }
     }
 
-    fn stmt_endloop(&mut self) {
-        let (was_dead, _loop_start, end_jumps) = self.loops.pop().expect("not inside loop");
-        self.dead = was_dead;
+    fn stmt_loop_end(&mut self, current_loop: Self::Loop) {
+        self.dead = current_loop.was_dead;
         if self.dead {
             return;
         }
-        self.patch_jmp_list_here(end_jumps);
+        self.patch_jmp_list_here(current_loop.end_jumps);
     }
 
     fn stmt_do(&mut self) {

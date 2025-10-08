@@ -361,10 +361,9 @@ pub struct ProtoGenerator {
     pub bytecode: Vec<Op>,
     pub frame: Frame,
     pub constants: ConstantPool,
-    pub upvalues: Vec<String>,                        // names of upvalues
-    pub protos: Vec<Proto>,                           // nested prototypes
-    pub ifjumps: Vec<(bool, bool, JumpList)>,         // jump-lists for pending if-then-else
-    pub loops: Vec<(bool, ProgramCounter, JumpList)>, // loop start positions & end jump-lists
+    pub upvalues: Vec<String>,                // names of upvalues
+    pub protos: Vec<Proto>,                   // nested prototypes
+    pub ifjumps: Vec<(bool, bool, JumpList)>, // jump-lists for pending if-then-else
     pub dead: bool,
 }
 
@@ -416,7 +415,6 @@ impl ProtoGenerator {
             upvalues: Vec::new(),
             protos: Vec::new(),
             ifjumps: Vec::new(),
-            loops: Vec::new(),
             dead: false,
         }
     }

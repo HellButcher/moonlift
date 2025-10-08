@@ -35,6 +35,7 @@ pub trait ParseVisitor {
     type ExprList;
     type ExprCall;
     type ExprTable;
+    type Loop;
     type Proto;
 
     fn enter_scope(&mut self) {}
@@ -96,12 +97,12 @@ pub trait ParseVisitor {
     fn stmt_else(&mut self);
     fn stmt_endif(&mut self);
 
-    fn stmt_loop(&mut self);
-    fn stmt_loop_while(&mut self, condition: Self::Expr);
-    fn stmt_loop_repeat_until(&mut self, condition: Self::Expr);
-    fn stmt_loop_for(&mut self, var: String, exprs: Self::ExprList);
-    fn stmt_loop_foreach(&mut self, vars: Vec<String>, exprs: Self::ExprList);
-    fn stmt_endloop(&mut self);
+    fn stmt_loop_begin(&mut self) -> Self::Loop;
+    fn stmt_loop_while(&mut self, current_loop: &mut Self::Loop, condition: Self::Expr);
+    fn stmt_loop_repeat_until(&mut self, current_loop: &mut Self::Loop, condition: Self::Expr);
+    fn stmt_loop_for_begin(&mut self, var: String, exprs: Self::ExprList) -> Self::Loop;
+    fn stmt_loop_foreach_begin(&mut self, vars: Vec<String>, exprs: Self::ExprList) -> Self::Loop;
+    fn stmt_loop_end(&mut self, l: Self::Loop);
 
     fn stmt_do(&mut self) {}
     fn stmt_enddo(&mut self) {}
@@ -596,13 +597,13 @@ impl<'a, S: Source, V: ParseVisitor + ?Sized> Parser<'a, S, V> {
     fn parse_whilestat(&mut self) -> Result<(), Error<S::Error, V::Error>> {
         self.expect_keyword("while")?;
         let while_pos = self.lex.position();
-        self.visitor.stmt_loop();
+        let mut current_loop = self.visitor.stmt_loop_begin();
         let cond = self.parse_expression()?;
-        self.visitor.stmt_loop_while(cond);
+        self.visitor.stmt_loop_while(&mut current_loop, cond);
         self.expect_keyword("do")?;
         self.parse_block()?;
         self.expect_match("end", "while", while_pos)?;
-        self.visitor.stmt_endloop();
+        self.visitor.stmt_loop_end(current_loop);
         Ok(())
     }
 
@@ -615,15 +616,15 @@ impl<'a, S: Source, V: ParseVisitor + ?Sized> Parser<'a, S, V> {
     fn parse_repeatstat(&mut self) -> Result<(), Error<S::Error, V::Error>> {
         self.expect_keyword("repeat")?;
         let repeat_pos = self.lex.position();
-        self.visitor.stmt_loop();
+        let mut current_loop = self.visitor.stmt_loop_begin();
         self.visitor.enter_scope();
         self.parse_statement_list()?;
         self.expect_match("until", "repeat", repeat_pos)?;
         // evaluate condition inside inner scope
         let cond = self.parse_expression()?;
-        self.visitor.stmt_loop_repeat_until(cond);
+        self.visitor.stmt_loop_repeat_until(&mut current_loop, cond);
         self.visitor.leave_scope();
-        self.visitor.stmt_endloop();
+        self.visitor.stmt_loop_end(current_loop);
         Ok(())
     }
 
@@ -651,12 +652,11 @@ impl<'a, S: Source, V: ParseVisitor + ?Sized> Parser<'a, S, V> {
                 let step = self.parse_expression()?;
                 self.visitor.expr_list_item(&mut exprs, step);
             }
-            self.visitor.stmt_loop();
-            self.visitor.stmt_loop_for(var, exprs);
+            let current_loop = self.visitor.stmt_loop_for_begin(var, exprs);
             self.expect_keyword("do")?;
             self.parse_block()?;
             self.expect_match("end", "for", for_pos)?;
-            self.visitor.stmt_endloop();
+            self.visitor.stmt_loop_end(current_loop);
             self.visitor.leave_scope();
         } else {
             // stat ::= 'for' namelist 'in' explist 'do' block 'end'
@@ -673,12 +673,11 @@ impl<'a, S: Source, V: ParseVisitor + ?Sized> Parser<'a, S, V> {
                 let e = self.parse_expression()?;
                 self.visitor.expr_list_item(&mut exprs, e);
             }
-            self.visitor.stmt_loop();
-            self.visitor.stmt_loop_foreach(vars, exprs);
+            let current_loop = self.visitor.stmt_loop_foreach_begin(vars, exprs);
             self.expect_keyword("do")?;
             self.parse_block()?;
             self.expect_match("end", "for", for_pos)?;
-            self.visitor.stmt_endloop();
+            self.visitor.stmt_loop_end(current_loop);
             self.visitor.leave_scope();
         }
         Ok(())
