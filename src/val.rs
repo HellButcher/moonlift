@@ -122,7 +122,7 @@ impl Value {
     }
 
     #[inline]
-    pub const fn bool(b: bool) -> Self {
+    pub const fn from_bool(b: bool) -> Self {
         if b {
             Self::TRUE
         } else {
@@ -131,24 +131,24 @@ impl Value {
     }
 
     #[inline]
-    pub const fn f64(f: f64) -> Self {
+    pub const fn from_f64(f: f64) -> Self {
         let i: i64 = f.to_bits().cast_signed();
         assert!(((i >> 47) as u32) < !13);
         Self { f }
     }
 
     #[inline]
-    pub const fn u32(u: u32) -> Self {
+    pub const fn from_u32(u: u32) -> Self {
         Self::tagged(TypeTag::Int, u as u64)
     }
 
     #[inline]
-    pub const fn i32(i: i32) -> Self {
+    pub const fn from_i32(i: i32) -> Self {
         Self::tagged(TypeTag::Int, (i as i64) as u64 & (!0u64 >> 17))
     }
 
     #[inline]
-    pub const fn u64(u: u64) -> Option<Self> {
+    pub const fn from_u64(u: u64) -> Option<Self> {
         if u > (!0u64 >> 18) {
             None
         } else {
@@ -157,7 +157,7 @@ impl Value {
     }
 
     #[inline]
-    pub const fn i64(i: i64) -> Option<Self> {
+    pub const fn from_i64(i: i64) -> Option<Self> {
         if i < (!(!0u64 >> 18)) as i64 || i > ((!0u64 >> 18) as i64) {
             None
         } else {
@@ -165,11 +165,16 @@ impl Value {
         }
     }
 
+    #[inline]
+    pub fn is_nil(&self) -> bool {
+        self.type_tag() == TypeTag::Nil
+    }
+
     pub fn is_truthy(&self) -> bool {
         match self.type_tag() {
             TypeTag::Nil | TypeTag::False => false,
-            TypeTag::Float => self.as_f64() != 0.0,
-            TypeTag::Int => self.as_u64() != 0,
+            TypeTag::Float => self.f64() != 0.0,
+            TypeTag::Int => self.u64() != 0,
             _ => true,
         }
     }
@@ -180,17 +185,17 @@ impl Value {
     }
 
     #[inline]
-    pub const fn as_f64(self) -> f64 {
+    pub const fn f64(self) -> f64 {
         unsafe { self.f }
     }
 
     #[inline]
-    pub const fn as_i64(self) -> i64 {
+    pub const fn i64(self) -> i64 {
         (unsafe { self.i } << 17) >> 17
     }
 
     #[inline]
-    pub const fn as_u64(self) -> u64 {
+    pub const fn u64(self) -> u64 {
         (unsafe { self.u }) & (!0u64 >> 17)
     }
 

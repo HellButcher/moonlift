@@ -26,134 +26,134 @@ fn parse_test_and_compile_to_bytecode(path: impl AsRef<Path>) -> Bytecode {
 // }
 
 #[test]
-fn parse_and_compile_bc_test__all() {
+fn parse_and_compile_bc_test_all() {
     parse_test_and_compile_to_bytecode("lua/testes/all.lua");
 }
 #[test]
-fn parse_test__api() {
+fn parse_test_api() {
     parse_test("lua/testes/api.lua");
 }
 #[test]
-fn parse_test__attrib() {
+fn parse_test_attrib() {
     parse_test("lua/testes/attrib.lua");
 }
 #[test]
-fn parse_test__big() {
+fn parse_test_big() {
     parse_test("lua/testes/big.lua");
 }
 #[test]
-fn parse_test__bitwise() {
+fn parse_test_bitwise() {
     parse_test("lua/testes/bitwise.lua");
 }
 #[test]
-fn parse_test__bwcoercion() {
+fn parse_test_bwcoercion() {
     parse_test("lua/testes/bwcoercion.lua");
 }
 #[test]
-fn parse_test__calls() {
+fn parse_test_calls() {
     parse_test("lua/testes/calls.lua");
 }
 #[test]
-fn parse_test__closure() {
+fn parse_test_closure() {
     parse_test("lua/testes/closure.lua");
 }
 #[test]
-fn parse_test__code() {
+fn parse_test_code() {
     parse_test("lua/testes/code.lua");
 }
 #[test]
-fn parse_test__constructs() {
+fn parse_test_constructs() {
     parse_test("lua/testes/constructs.lua");
 }
 #[test]
-fn parse_test__coroutine() {
+fn parse_test_coroutine() {
     parse_test("lua/testes/coroutine.lua");
 }
 #[test]
-fn parse_test__cstack() {
+fn parse_test_cstack() {
     parse_test("lua/testes/cstack.lua");
 }
 #[test]
-fn parse_test__db() {
+fn parse_test_db() {
     parse_test("lua/testes/db.lua");
 }
 #[test]
-fn parse_test__errors() {
+fn parse_test_errors() {
     parse_test("lua/testes/errors.lua");
 }
 #[test]
-fn parse_test__events() {
+fn parse_test_events() {
     parse_test("lua/testes/events.lua");
 }
 #[test]
-fn parse_test__giles() {
+fn parse_test_giles() {
     parse_test("lua/testes/files.lua");
 }
 #[test]
-fn parse_test__gc() {
+fn parse_test_gc() {
     parse_test("lua/testes/gc.lua");
 }
 #[test]
-fn parse_test__gengc() {
+fn parse_test_gengc() {
     parse_test("lua/testes/gengc.lua");
 }
 #[test]
-fn parse_test__goto() {
+fn parse_test_goto() {
     parse_test("lua/testes/goto.lua");
 }
 #[test]
-fn parse_test__heavy() {
+fn parse_test_heavy() {
     parse_test("lua/testes/heavy.lua");
 }
 #[test]
-fn parse_test__literals() {
+fn parse_test_literals() {
     parse_test("lua/testes/literals.lua");
 }
 #[test]
-fn parse_test__locals() {
+fn parse_test_locals() {
     parse_test("lua/testes/locals.lua");
 }
 #[test]
-fn parse_test__main() {
+fn parse_test_main() {
     parse_test("lua/testes/main.lua");
 }
 #[test]
-fn parse_test__math() {
+fn parse_test_math() {
     parse_test("lua/testes/math.lua");
 }
 #[test]
-fn parse_test__nextvar() {
+fn parse_test_nextvar() {
     parse_test("lua/testes/nextvar.lua");
 }
 #[test]
-fn parse_test__pm() {
+fn parse_test_pm() {
     parse_test("lua/testes/pm.lua");
 }
 #[test]
-fn parse_test__sort() {
+fn parse_test_sort() {
     parse_test("lua/testes/sort.lua");
 }
 #[test]
-fn parse_test__strings() {
+fn parse_test_strings() {
     parse_test("lua/testes/strings.lua");
 }
 #[test]
-fn parse_test__tpack() {
+fn parse_test_tpack() {
     parse_test("lua/testes/tpack.lua");
 }
 #[test]
-fn parse_test__tracegc() {
+fn parse_test_tracegc() {
     parse_test("lua/testes/tracegc.lua");
 }
 #[test]
-fn parse_test__utf8() {
+fn parse_test_utf8() {
     parse_test("lua/testes/utf8.lua");
 }
 #[test]
-fn parse_test__vararg() {
+fn parse_test_vararg() {
     parse_test("lua/testes/vararg.lua");
 }
 #[test]
-fn parse_test__verybig() {
+fn parse_test_verybig() {
     parse_test("lua/testes/verybig.lua");
 }

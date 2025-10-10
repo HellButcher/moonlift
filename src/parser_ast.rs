@@ -353,7 +353,11 @@ impl ParseVisitor for AstVisitor {
         table.push(ast::Field::Named(name, value));
     }
     fn expr_table_field_exp(&mut self, table: &mut Self::ExprTable, expr: Self::Expr) {
-        table.push(ast::Field::Exp(expr));
+        let exp_count = table
+            .iter()
+            .filter(|f| matches!(f, ast::Field::Exp(_, _)))
+            .count();
+        table.push(ast::Field::Exp(exp_count + 1, expr));
     }
     fn expr_table_end(&mut self, table: Self::ExprTable) -> Self::Expr {
         ast::Expression::Table(table)

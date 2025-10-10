@@ -226,7 +226,7 @@ impl Expression {
 
 #[derive(Debug, PartialEq)]
 pub enum Field {
-    Exp(Expression),
+    Exp(usize, Expression),
     Named(String, Expression),
     Index(Expression, Expression),
 }

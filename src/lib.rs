@@ -13,7 +13,7 @@ use crate::{
 mod ast;
 mod val;
 #[macro_use]
-mod opcode;
+pub mod opcode;
 mod codegen;
 mod codegen_state;
 mod vm;
@@ -25,6 +25,8 @@ mod lexer;
 mod parser;
 mod parser_ast;
 mod source;
+
+pub use val::Value;
 
 #[derive(thiserror::Error, Debug, PartialEq)]
 pub enum Error<IoError = Infallible, VisitorError = Infallible> {

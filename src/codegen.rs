@@ -91,7 +91,7 @@ impl ParseVisitor for BytecodeGenerator {
     type Expr = Expr;
     type ExprList = (Expr, u8);
     type ExprCall = (Expr, u8);
-    type ExprTable = Expr;
+    type ExprTable = (Expr, u8);
     type Loop = Loop;
     type Error = CodeGenerationError;
     type Proto = Proto;
@@ -501,53 +501,76 @@ impl ParseVisitor for BytecodeGenerator {
 
     fn expr_table_begin(&mut self) -> Self::ExprTable {
         if self.dead {
-            return Expr::Void;
+            return (Expr::Void, 0);
         }
         // Create a new table and allocate a slot for it
         let table_slot = self.frame.alloc_temp();
         self.emit(op![TNew(table_slot, 0)]); // Empty table for now
 
-        Expr::new(ExprValue::NonReloc(table_slot))
+        (Expr::new(ExprValue::NonReloc(table_slot)), 0)
     }
 
     fn expr_table_field_index(
         &mut self,
-        table: &mut Self::ExprTable,
-        _key: Self::Expr,
-        _value: Self::Expr,
+        (table, _): &mut Self::ExprTable,
+        mut key: Self::Expr,
+        mut expr: Self::Expr,
     ) {
         if self.dead {
             return;
         }
-        // For proper implementation, we'd need to track the current table being built
-        // For now, just a placeholder
-        todo!("Table field by expression not implemented");
+        let ExprValue::NonReloc(table_slot) = table.value else {
+            panic!("Expected table to be in next register");
+        };
+        let expr_reg = self.expr_to_any_reg(&mut expr).unwrap();
+        let key_reg = self.expr_to_any_reg(&mut key).unwrap();
+        self.emit(op![TSetV(expr_reg, table_slot, key_reg)]);
+        self.expr_free(&expr.value);
+        self.expr_free(&key.value);
     }
 
     fn expr_table_field_named(
         &mut self,
-        table: &mut Self::ExprTable,
-        _name: String,
-        _value: Self::Expr,
+        (table, _): &mut Self::ExprTable,
+        name: String,
+        mut expr: Self::Expr,
     ) {
         if self.dead {
             return;
         }
-        // For proper implementation, we'd need to track the current table being built
-        // For now, just a placeholder
-        todo!("Table field by expression not implemented");
+        let ExprValue::NonReloc(table_slot) = table.value else {
+            panic!("Expected table to be in next register");
+        };
+        let expr_reg = self.expr_to_any_reg(&mut expr).unwrap();
+        let k = self
+            .constants
+            .add_string(name.into_bytes().into_boxed_slice())
+            .unwrap();
+        if k <= 255 {
+            self.emit(op![TSetS(expr_reg, table_slot, k as u8)]);
+        } else {
+            let key_slot = self.frame.alloc_temp();
+            self.emit(op![KStr(key_slot, k)]);
+            self.emit(op![TSetV(expr_reg, table_slot, key_slot)]);
+            self.frame.free(key_slot);
+        }
+        self.expr_free(&expr.value);
     }
 
-    fn expr_table_field_exp(&mut self, table: &mut Self::ExprTable, _expr: Self::Expr) {
+    fn expr_table_field_exp(&mut self, (table, count): &mut Self::ExprTable, mut expr: Self::Expr) {
         if self.dead {
             return;
         }
-        // For proper implementation, we'd need to track the current table being built
-        // For now, just a placeholder
-        todo!("Table field by expression not implemented");
+        let ExprValue::NonReloc(table_slot) = table.value else {
+            panic!("Expected table to be in next register");
+        };
+        let expr_reg = self.expr_to_any_reg(&mut expr).unwrap();
+        *count += 1;
+        self.emit(op![TSetB(expr_reg, table_slot, *count)]);
+        self.expr_free(&expr.value);
     }
 
-    fn expr_table_end(&mut self, table: Self::ExprTable) -> Self::Expr {
+    fn expr_table_end(&mut self, (table, _): Self::ExprTable) -> Self::Expr {
         table
     }
 
@@ -720,10 +743,22 @@ impl ParseVisitor for BytecodeGenerator {
 
     fn stmt_loop_end(&mut self, current_loop: Self::Loop) {
         self.dead = current_loop.was_dead;
-        if self.dead {
+        if self.dead || !current_loop.end_jumps.has_jumps() {
             return;
         }
-        self.patch_jmp_list_here(current_loop.end_jumps);
+        let target = current_loop.end_jumps.0;
+        let here = self.pc();
+        match_op! {(&mut self[target]) {
+            IterL(_, ref mut d) => {
+                *d = target.as_offset_relative_to(here);
+            },
+            ForL(_, ref mut d) => {
+                *d = target.as_offset_relative_to(here);
+            },
+            _ => {
+                self.patch_jmp_list(current_loop.end_jumps, here);
+            }
+        }}
     }
 
     fn stmt_do(&mut self) {

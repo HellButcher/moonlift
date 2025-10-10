@@ -1,4 +1,10 @@
+use crate::vm::VM;
 use std::fmt;
+
+#[doc(hidden)]
+pub mod __doc_test_only {
+    pub use crate::vm::VM;
+}
 
 macro_rules! __mkop {
     (is_a_dst_impl [dst $(, $x:ident)*]) => (true);
@@ -89,8 +95,14 @@ macro_rules! define_opcodes {
                 #[doc = concat!("Signature: `", stringify!($id ($($arg : $mode),*)), "`")]
                 ///
                 /// This opcode is equivalent to the following Rust code:
-                /// ```rust
+                /// ```rust,no_run
+                /// # use moonlift::Value;
+                /// # fn t(
+                /// # vm: &mut moonlift::opcode::__doc_test_only::VM,
+                #[doc = concat!("# ", stringify!(($($arg,)*)), ": <moonlift::opcode::Args as moonlift::opcode::OpArgs<{moonlift::opcode::OpCode::", stringify!($id), " as u8}>>::Args,")]
+                /// # ) {
                 #[doc = stringify!($($body)*)]
+                /// # }
                 /// ```
                 $id
             ),*
@@ -299,7 +311,7 @@ const _: () = {
 ///
 /// # Examples
 /// ```rust
-/// # use moonlift::opcode::{op, match_op};
+/// # use moonlift::{op, match_op};
 /// let mut op = op!(AddVV(1, 2, 3));
 /// match_op!{(&mut op) {
 ///   AddVV (a, ref mut b, c) => {
@@ -310,7 +322,7 @@ const _: () = {
 ///     *b += 10;
 /// #   assert_eq!(*b, 12);
 ///   },
-///   SuvVV => {
+///   SubVV => {
 ///     // Simple check for OpCode only
 ///   },
 ///   _ => panic!("unexpected opcode"),
@@ -327,16 +339,17 @@ const _: () = {
 /// //Simple check if an Op is of a certain OpCode
 /// assert!(match_op!(op, AddVV));
 /// ```
+#[macro_export]
 macro_rules! match_op {
     (#getargs($src:expr ; $code:ident)) => {
       {
-        let src: &crate::opcode::Args = &$src;
+        let src: &$crate::opcode::Args = &$src;
         $crate::opcode::OpArgs::<{$crate::opcode::OpCode::$code as u8}>::get(src)
       }
     };
     (#getargsviewmut($src:expr ; $code:ident)) => {
       {
-        let src: &mut crate::opcode::Args = $src;
+        let src: &mut $crate::opcode::Args = $src;
         $crate::opcode::OpArgs::<{$crate::opcode::OpCode::$code as u8}>::get_view_mut(src)
       }
     };
@@ -353,8 +366,8 @@ macro_rules! match_op {
       match_op!(#ifrefmut ($($rest)*) { $($ismut)* } $(else {$($isnonmut)*})?);
     };
 
-    (op:expr, $opcode:ident) => {
-        match op.0 {
+    ($op:expr, $opcode:ident) => {
+        match $op.0 {
             $crate::opcode::OpCode::$opcode => true,
             _ => false,
         }
@@ -394,11 +407,12 @@ macro_rules! match_op {
 ///
 /// # Examples
 /// ```rust,no_run
-/// # use moonlift::opcode::op;
-/// op![Mov(0, 1)] // OpCode::Mov with Args { a: 0, d: 1 }
-/// op![IsTC(0, 1)] // OpCode::IsTC with Args { a: 0, d: 1 }
-/// op![AddV(0, 1, 2)] // OpCode::AddV with Args { a: 0, b: 1, c: 2 }
+/// # use moonlift::op;
+/// op![Mov(0, 1)]; // OpCode::Mov with Args { a: 0, d: 1 }
+/// op![IsTC(0, 1)]; // OpCode::IsTC with Args { a: 0, d: 1 }
+/// op![AddVV(0, 1, 2)]; // OpCode::AddVV with Args { a: 0, b: 1, c: 2 }
 /// ```
+#[macro_export]
 macro_rules! op {
     (#setargs $arg:expr; $src:expr; $code:ident) => {
       $crate::opcode::OpArgs::<{$crate::opcode::OpCode::$code as u8}>::set($src, $arg);
@@ -442,37 +456,6 @@ fn test_match_op() {
     assert_eq!(op, op!(AddVV(1, 12, 3)));
 }
 
-struct VM {
-    pc: usize,
-}
-type Value = u32;
-impl VM {
-    fn get(&self, reg: u8) -> Value {
-        todo!()
-    }
-    fn set(&mut self, var: u8, val: Value) {
-        todo!()
-    }
-    fn get_uv(&self, uv: u8) -> Value {
-        todo!()
-    }
-    fn set_uv(&mut self, uv: u8, val: u32) {
-        todo!()
-    }
-    fn get_table(&self, var: u8, key: Value) -> Value {
-        todo!()
-    }
-    fn set_table(&mut self, var: u8, key: Value, val: Value) {
-        todo!()
-    }
-    fn get_const(&self, k: u16) -> Value {
-        todo!()
-    }
-    fn get_func(&self, p: u16) -> Value {
-        todo!()
-    }
-}
-
 // The suffix(es) of the instruction name distinguish variants of the same basic instruction:
 //
 // - V variable slot
@@ -506,27 +489,31 @@ define_opcodes! {
 
     // Jump if A < D
     IsLt(a: var, d: var) {
-        if vm.get(a) >= vm.get(d) {
-            vm.pc += 1;
-        }
+        // if vm.get(a) >= vm.get(d) {
+        //     vm.pc += 1;
+        // }
+        todo!();
     },
     // Jump if A ≥ D
     IsGe(a: var, d: var) {
-        if vm.get(a) < vm.get(d) {
-            vm.pc += 1;
-        }
+        // if vm.get(a) < vm.get(d) {
+        //     vm.pc += 1;
+        // }
+        todo!();
     },
     // Jump if A ≤ D
     IsLe(a: var, d: var) {
-        if vm.get(a) > vm.get(d) {
-            vm.pc += 1;
-        }
+        // if vm.get(a) > vm.get(d) {
+        //     vm.pc += 1;
+        // }
+        todo!();
     },
     // Jump if A > D
     IsGt(a: var, d: var) {
-        if vm.get(a) <= vm.get(d) {
-            vm.pc += 1;
-        }
+        // if vm.get(a) <= vm.get(d) {
+        //     vm.pc += 1;
+        // }
+        todo!();
     },
     // Jump if A = D
     IsEqV(a: var, d: var) {
@@ -581,23 +568,31 @@ define_opcodes! {
 
     // Copy D to A and jump, if D is true
     IsTC(a: dst, d: var) {
-        // TODO
-        let a = todo!();
+        let val = vm.get(d);
+        vm.set(a, val);
+        if val.is_falsy() {
+            vm.pc += 1;
+        }
     },
     // Copy D to A and jump, if D is false
     IsFC(a: dst, d: var) {
-        // TODO
-        let a = todo!();
+        let val = vm.get(d);
+        vm.set(a, val);
+        if val.is_truthy() {
+            vm.pc += 1;
+        }
     },
     // Jump if D is true
-    IsT(a: var) {
-        // TODO
-        todo!();
+    IsT(d: var) {
+        if vm.get(d).is_falsy() {
+            vm.pc += 1;
+        }
     },
     // Jump if D is false
-    IsF(a: var) {
-        // TODO
-        todo!();
+    IsF(d: var) {
+        if vm.get(d).is_truthy() {
+            vm.pc += 1;
+        }
     },
 
     // Copy D to A
@@ -606,11 +601,12 @@ define_opcodes! {
     },
     // Set A to boolean not of D
     Not(a: dst, d: var) {
-        vm.set(a, !vm.get(d));
+        //vm.set(a, !vm.get(d));
+        todo!();
     },
     // Set A to -D (unary minus)
     UNM(a: dst, d: var) {
-        // TODO
+        //vm.set(a, -vm.get(d));
         todo!();
     },
     // Set A to #D (object length)
@@ -665,67 +661,80 @@ define_opcodes! {
 
     // A = B + C
     AddVV(a: dst, b: var, c: var) {
-      let a = b + c;
+      // let a = b + c;
+      todo!();
     },
     // A = B - C
     SubVV(a: dst, b: var, c: var) {
-      let a = b - c;
+      // let a = b - c;
+      todo!();
     },
     // A = B * C
     MulVV(a: dst, b: var, c: var) {
-      let a = b * c;
+      // let a = b * c;
+      todo!();
     },
     // A = B / C
     DivVV(a: dst, b: var, c: var) {
-      let a = b / c;
+      // let a = b / c;
+      todo!();
     },
     // A = B // C (integer division)
     IDivVV(a: dst, b: var, c: var) {
-      let a = b / c;
+      // let a = b / c;
+      todo!();
     },
     // A = B % C
     ModVV(a: dst, b: var, c: var) {
-      let a = b % c;
+      // let a = b % c;
+      todo!();
     },
 
     // Set A bitwise not of D
     BNot(a: dst, d: var) {
-        let a = !d;
+      //let a = !d;
+      todo!();
     },
     // A = B & C (bit and)
     BAndVV(a: dst, b: var, c: var) {
-      let a = b & c;
+      //let a = b & c;
+      todo!();
     },
     // A = B | C (bit or)
     BOrVV(a: dst, b: var, c: var) {
-      let a = b & c;
+      //let a = b & c;
+      todo!();
     },
     // A = B ~ C (bit or)
     BXorVV(a: dst, b: var, c: var) {
-      let a = b ^ c;
+      //let a = b ^ c;
+      todo!();
     },
     // A = B << C (shift left)
     ShLVV(a: dst, b: var, c: var) {
-      let a = b << c;
+      //let a = b << c;
+      todo!();
     },
     // A = B >> C (shift right)
     ShRVV(a: dst, b: var, c: var) {
-      let a = b >> c;
+      //let a = b >> c;
+      todo!();
     },
 
     // A = B ^ C
     Pow(a: dst, b: var, c: var) {
-      let a = b.pow(c);
+      //let a = b.pow(c);
+      todo!();
     },
     // A = B .. ~ .. C
     Cat(a: dst, b: rbase, c: rbase) {
       // TODO
-      let a = todo!();
+      todo!();
     },
 
     // Set A to string constant D
     KStr(a: dst, d: str) {
-      let a = d;
+      vm.set(a, vm.get_const(d));
     },
     // // Set A to cdata constant D
     // KCData(a: dst, d: cdata) {
@@ -734,11 +743,11 @@ define_opcodes! {
     // },
     // Set A to 16 bit signed integer D
     KShort(a: dst, d: lits) {
-      let a = d;
+      vm.set(a, Value::from_i32(d as i32));
     },
     // Set A to number constant D
     KNum(a: dst, d: num) {
-      let a = d;
+      vm.set(a, vm.get_const(d));
     },
     // Set A to B to primitive C
     // switch (C) {
@@ -747,7 +756,12 @@ define_opcodes! {
     //     case 2: A..B = true;
     // }
     KPri(a: base, b: base, c: pri) {
-        let val = Value::from_pri(c);
+        let val = match c {
+            0 => Value::NIL,
+            1 => Value::FALSE,
+            2 => Value::TRUE,
+            _ => unreachable!("invalid KPri value"),
+        };
         for i in a..=b {
             vm.set(i, val);
         }
@@ -755,11 +769,11 @@ define_opcodes! {
 
     // Set A to upvalue D
     UGet(a: dst, d: uv) {
-      let a = d;
+      vm.set(a, vm.get_uv(d));
     },
     // Set upvalue A to D
     USetV(a: uvdst, d: var) {
-      let a = d;
+      vm.set_uv(a, vm.get(d));
     },
     // // Set upvalue A to string constant D
     // USetS(a: uvdst, d: str) {
@@ -785,13 +799,13 @@ define_opcodes! {
     // Create new closure from prototype D and store it in A
     FNew(a: dst, d: func) {
       // TODO
-      let a = todo!();
+      todo!();
     },
 
     // Set A to new table with size D
     TNew(a: dst, d: lit) {
       // TODO
-      let a = todo!();
+      todo!();
     },
     // // Set A to duplicated template table D
     // TDup(a: dst, d: tab) {
@@ -801,7 +815,7 @@ define_opcodes! {
     // A = G[D] (global get)
     GGet(a: dst, d: str) {
       // TODO
-      let a = todo!();
+      todo!();
     },
     // G[D] = A (global set)
     GSet(a: var, d: str) {
@@ -810,39 +824,33 @@ define_opcodes! {
     },
     // A = B[C]
     TGetV(a: dst, b: var, c: var) {
-      // TODO
-      let a = todo!();
+      vm.set(a, vm.get_table(b, vm.get(c)));
     },
     // A = B[C]
     TGetS(a: dst, b: var, c: str) {
-      // TODO
-      let a = todo!();
+      vm.set(a, vm.get_table(b, vm.get_const(c as u16)));
     },
     // A = B[C]
     TGetB(a: dst, b: var, c: lit) {
-      // TODO
-      let a = todo!();
+      vm.set(a, vm.get_table(b, Value::from_i32(c as i32)));
     },
     // B[C] = A
     TSetV(a: var, b: var, c: var) {
-      // TODO
-      todo!();
+      vm.set_table(b, vm.get(c), vm.get(a));
     },
     // B[C] = A
     TSetS(a: var, b: var, c: str) {
-      // TODO
-      todo!();
+      vm.set_table(b, vm.get_const(c as u16), vm.get(a));
     },
     // B[C] = A
     TSetB(a: var, b: var, c: lit) {
-      // TODO
-      todo!();
+      vm.set_table(b, Value::from_i32(c as i32), vm.get(a));
     },
-    // (A-1)[D], (A-1)[D+1], ... = A, A+1, ...
-    TSetM(a: base, d: num) {
-      // TODO
-      todo!();
-    },
+    // // (A-1)[D], (A-1)[D+1], ... = A, A+1, ...
+    // TSetM(a: base, d: num) {
+    //   // TODO
+    //   todo!();
+    // },
 
     // // Call: A, ..., A+B-2 = A(A+1, ..., A+C+MULTRES)
     // CallM(a: base, b: lit, c: lit) {
@@ -852,7 +860,7 @@ define_opcodes! {
     // Call: A, ..., A+B-2 = A(A+1, ..., A+C-1)
     Call(a: base, b: lit, c: lit) {
       // TODO
-        todo!();
+      todo!();
     },
     // // Tail-Call: `return` A(A+1, ..., A+D+MULTRES)
     // CallMT(a: base, d: lit) {
@@ -862,7 +870,7 @@ define_opcodes! {
     // Tail-Call: return A(A+1, ..., A+D-1)
     CallT(a: base, d: lit) {
       // TODO
-        todo!();
+      todo!();
     },
 
     // // Return A, \..., A+D+MULTRES-1
@@ -873,7 +881,7 @@ define_opcodes! {
     // Return A, ..., A+D-2
     Ret(a: base, d: lit) {
       // TODO
-        todo!();
+      todo!();
     },
     // Return
     Ret0(a: rbase, d: lit) {
@@ -883,44 +891,46 @@ define_opcodes! {
     // Return A
     Ret1(a: rbase, d: lit) {
       // TODO
-        todo!();
+      todo!();
     },
 
     // Numeric 'for' loop - init
     // check values and prepare counters; if not to run then pc+=D+1
     ForI(a: base, d: jump) {
-        let i = vm.get(a);
-        let limit = vm.get(a + 1);
-        let step = vm.get(a + 2);
-        let cond = if (step >= 0) {
-            i > limit
-        } else {
-            i < limit
-        }
-        if cond {
-            vm.pc += (d as isize + 1) as usize;
-        } else {
-            vm.set(a + 3, i);
-        }
+        // let i = vm.get(a);
+        // let limit = vm.get(a + 1);
+        // let step = vm.get(a + 2);
+        // let cond = if step >= 0 {
+        //     i > limit
+        // } else {
+        //     i < limit
+        // }
+        // if cond {
+        //     vm.pc += (d as isize + 1) as usize;
+        // } else {
+        //     vm.set(a + 3, i);
+        // }
+        todo!();
     },
     // Numeric 'for' loop - loop
     // update counters; if loop continues then pc-=D;
     ForL(a: base, d: jump) {
-        let mut i = vm.get(a);
-        let limit = vm.get(a + 1);
-        let step = vm.get(a + 2);
-        i += step;
-        vm.set(a, i);
-        let cond = if (step >= 0) {
-            i > limit
-        } else {
-            i < limit
-        }
-        if cond {
-            vm.pc += (d as isize) as usize;
-        } else {
-            vm.set(a + 3, i);
-        }
+        // let mut i = vm.get(a);
+        // let limit = vm.get(a + 1);
+        // let step = vm.get(a + 2);
+        // i += step;
+        // vm.set(a, i);
+        // let cond = if (step >= 0) {
+        //     i > limit
+        // } else {
+        //     i < limit
+        // }
+        // if cond {
+        //     vm.pc += (d as isize) as usize;
+        // } else {
+        //     vm.set(a + 3, i);
+        // }
+        todo!();
     },
     // Call iterator: A, A+1, A+2 = A-3, A-2, A-1; A, ..., A+B-2 = A(A+1, A+2)
     IterC(a: base, b: lit, c: lit) {
@@ -1003,7 +1013,7 @@ impl Op {
     }
 
     #[inline]
-    pub const fn set_opcode(&mut self, new_opcode: OpCode) {
+    pub(crate) const fn set_opcode(&mut self, new_opcode: OpCode) {
         self.0 = new_opcode;
     }
 
@@ -1013,12 +1023,12 @@ impl Op {
     }
 
     #[inline]
-    pub const fn args_mut(&mut self) -> &mut Args {
+    pub(crate) const fn args_mut(&mut self) -> &mut Args {
         &mut self.1
     }
 
     #[inline]
-    pub const fn set_a_dst(
+    pub(crate) const fn set_a_dst(
         &mut self,
         dst: u8,
     ) -> Result<(), crate::codegen_state::CodeGenerationError> {
@@ -1032,7 +1042,7 @@ impl Op {
     }
 
     #[inline]
-    pub const fn set_base_num(
+    pub(crate) const fn set_base_num(
         &mut self,
         num: u8,
     ) -> Result<u8, crate::codegen_state::CodeGenerationError> {
@@ -1055,7 +1065,7 @@ impl Op {
     }
 
     #[inline]
-    pub fn negate(&mut self) -> bool {
+    pub(crate) fn negate(&mut self) -> bool {
         let Some(new_opcode) = self.opcode().negated() else {
             return false;
         };
