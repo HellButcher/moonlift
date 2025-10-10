@@ -9,8 +9,11 @@ edition = "2021"
 rust-version = "1.65"
 
 [dependencies]
-cranelift = "0.103"
-cranelift-jit = "0.103"
-cranelift-module = "0.103"
-cranelift-native = "0.103"
-thiserror = "1.0"
+cranelift = "0.124"
+cranelift-jit = "0.124"
+cranelift-module = "0.124"
+cranelift-native = "0.124"
+thiserror = "2.0"
+
+[dev-dependencies]
+insta = { version = "1.4", default-features = false }

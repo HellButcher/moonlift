@@ -27,7 +27,8 @@ fn parse_test_and_compile_to_bytecode(path: impl AsRef<Path>) -> Bytecode {
 
 #[test]
 fn parse_and_compile_bc_test_all() {
-    parse_test_and_compile_to_bytecode("lua/testes/all.lua");
+    let bytecode = parse_test_and_compile_to_bytecode("lua/testes/all.lua");
+    insta::assert_debug_snapshot!(bytecode);
 }
 #[test]
 fn parse_test_api() {
