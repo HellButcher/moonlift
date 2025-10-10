@@ -91,6 +91,58 @@ impl Position {
     }
 }
 
+mod utf8 {
+    // Simple more relaxed utf8 encoding functions for escape sequences.
+    const TAG_CONT: u8 = 0b1000_0000;
+    const TAG_TWO_B: u8 = 0b1100_0000;
+    const TAG_THREE_B: u8 = 0b1110_0000;
+    const TAG_FOUR_B: u8 = 0b1111_0000;
+    const MAX_ONE_B: u32 = 0x80;
+    const MAX_TWO_B: u32 = 0x800;
+    const MAX_THREE_B: u32 = 0x10000;
+
+    #[inline]
+    #[must_use]
+    const fn len_utf8(code: u32) -> usize {
+        match code {
+            ..MAX_ONE_B => 1,
+            ..MAX_TWO_B => 2,
+            ..MAX_THREE_B => 3,
+            _ => 4,
+        }
+    }
+
+    #[inline]
+    pub fn encode_utf8_raw(code: u32, dst: &mut [u8; 4]) -> &[u8] {
+        let len = len_utf8(code);
+        match len {
+            1 => {
+                dst[0] = code as u8;
+                &dst[0..1]
+            }
+            2 => {
+                dst[0] = (code >> 6 & 0x1F) as u8 | TAG_TWO_B;
+                dst[1] = (code & 0x3F) as u8 | TAG_CONT;
+                &dst[0..2]
+            }
+            3 => {
+                dst[0] = (code >> 12 & 0x0F) as u8 | TAG_THREE_B;
+                dst[1] = (code >> 6 & 0x3F) as u8 | TAG_CONT;
+                dst[2] = (code & 0x3F) as u8 | TAG_CONT;
+                &dst[0..3]
+            }
+            4 => {
+                dst[0] = (code >> 18 & 0x07) as u8 | TAG_FOUR_B;
+                dst[1] = (code >> 12 & 0x3F) as u8 | TAG_CONT;
+                dst[2] = (code >> 6 & 0x3F) as u8 | TAG_CONT;
+                dst[3] = (code & 0x3F) as u8 | TAG_CONT;
+                &dst[0..4]
+            }
+            _ => unreachable!(),
+        }
+    }
+}
+
 pub struct Lexer<S> {
     source: S,
     line: usize,
@@ -611,6 +663,8 @@ impl<S: Source> Lexer<S> {
                     b'u' => {
                         // unicode as utf-8 (\u{XXX})
                         if !matches!(self.source.read_next()?, Some(b'{')) {
+                            #[cfg(debug_assertions)]
+                            eprintln!("Invalid unicode escape sequence: missing '{{'");
                             return Err(LexerError::InvalidEscapeSequence(c as char));
                         }
                         let mut v = if let Some(v) =
@@ -618,6 +672,8 @@ impl<S: Source> Lexer<S> {
                         {
                             v as u32
                         } else {
+                            #[cfg(debug_assertions)]
+                            eprintln!("Invalid unicode escape sequence: missing hex digit");
                             return Err(LexerError::InvalidEscapeSequence(c as char));
                         };
                         for _ in 1..8 {
@@ -630,13 +686,12 @@ impl<S: Source> Lexer<S> {
                             v |= v2 as u32;
                         }
                         if !matches!(self.source.read_next()?, Some(b'}')) {
+                            #[cfg(debug_assertions)]
+                            eprintln!("Invalid unicode escape sequence: missing '}}'");
                             return Err(LexerError::InvalidEscapeSequence(c as char));
                         }
-                        let Some(chr) = char::from_u32(v) else {
-                            return Err(LexerError::InvalidEscapeSequence(c as char));
-                        };
                         let mut buf = [0u8; 4];
-                        for c in chr.encode_utf8(&mut buf).as_bytes().iter().copied() {
+                        for c in utf8::encode_utf8_raw(v, &mut buf).iter().copied() {
                             self.value.push(c);
                         }
                         continue;
