@@ -1,4 +1,3 @@
-use crate::vm::VM;
 use std::fmt;
 
 #[doc(hidden)]

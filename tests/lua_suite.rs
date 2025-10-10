@@ -1,7 +1,7 @@
 use moonlift::{Ast, Bytecode};
 use std::io::Read;
-use std::{fs, io};
 use std::path::Path;
+use std::{fs, io};
 
 fn parse_test(path: impl AsRef<Path>) -> Ast {
     let path = path.as_ref();
