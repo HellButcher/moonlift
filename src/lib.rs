@@ -53,6 +53,7 @@ pub struct ErrorWithPosition<IoError = Infallible, VisitorError = Infallible> {
 #[derive(thiserror::Error, Debug, PartialEq)]
 pub enum ModuleError {}
 
+#[derive(Debug, PartialEq)]
 pub struct Ast {
     block: Block,
 }
@@ -71,7 +72,7 @@ impl Ast {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Bytecode {
     root: Proto,
 }

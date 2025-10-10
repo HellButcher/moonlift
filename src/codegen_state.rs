@@ -67,6 +67,7 @@ impl Hash for StrPtr {
     }
 }
 
+#[derive(PartialEq)]
 pub struct ConstantPool {
     constants: Vec<Constant>,
     string_map: HashMap<StrPtr, u16>, // pointer to string data -> idx
@@ -177,7 +178,7 @@ impl fmt::Debug for ConstantPool {
 pub type Reg = u8;
 pub const NO_REG: Reg = !0;
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 /// Hilfsstruktur für lokale Variablen und temporäre Werte
 pub struct Frame {
     next_slot: u8,           // nächster freier Slot
@@ -343,7 +344,7 @@ impl JumpList {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Proto {
     pub num_params: u8,
     pub is_vararg: bool,
@@ -354,7 +355,7 @@ pub struct Proto {
     pub protos: Box<[Proto]>, // nested prototypes
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct ProtoGenerator {
     pub num_params: u8,
     pub is_vararg: bool,
@@ -367,7 +368,7 @@ pub struct ProtoGenerator {
     pub dead: bool,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct BytecodeGenerator {
     pub protos: Vec<ProtoGenerator>,
 }

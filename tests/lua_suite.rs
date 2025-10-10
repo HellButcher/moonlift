@@ -1,5 +1,6 @@
 use moonlift::{Ast, Bytecode};
-use std::fs;
+use std::io::Read;
+use std::{fs, io};
 use std::path::Path;
 
 fn parse_test(path: impl AsRef<Path>) -> Ast {
@@ -20,6 +21,18 @@ fn parse_test_and_compile_to_bytecode(path: impl AsRef<Path>) -> Bytecode {
     }
 }
 
+fn write_bytecode_snapshot(path: impl AsRef<Path>, bytecode: &Bytecode) {
+    let path = path.as_ref();
+    let mut f = io::BufWriter::new(fs::File::create(path).unwrap());
+    bytecode.write_binary(&mut f).unwrap();
+}
+
+fn read_bytecode_snapshot(path: impl AsRef<Path>) -> Bytecode {
+    let path = path.as_ref();
+    let mut f = io::BufReader::new(fs::File::open(path).unwrap());
+    Bytecode::read_binary(&mut f).unwrap()
+}
+
 // fn compile_test_jit(source: &Ast) {
 //     let mut jit = moonlift::jit::JIT::new();
 //     jit.compile(source).unwrap()
@@ -29,6 +42,10 @@ fn parse_test_and_compile_to_bytecode(path: impl AsRef<Path>) -> Bytecode {
 fn parse_and_compile_bc_test_all() {
     let bytecode = parse_test_and_compile_to_bytecode("lua/testes/all.lua");
     insta::assert_debug_snapshot!(bytecode);
+    let f = "tests/bytecode/lua_suite__parse_and_compile_bc_test_all.moonliftbc";
+    write_bytecode_snapshot(f, &bytecode);
+    let read_back = read_bytecode_snapshot(f);
+    similar_asserts::assert_eq!(bytecode, read_back);
 }
 #[test]
 fn parse_test_api() {
