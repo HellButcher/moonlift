@@ -121,3 +121,22 @@ impl<T: AsRef<[u8]>> Source for BytesSource<T> {
         self.pos
     }
 }
+
+impl<S: Source + ?Sized> Source for &mut S {
+    type Error = S::Error;
+
+    #[inline]
+    fn read_next(&mut self) -> Result<Option<u8>, Self::Error> {
+        S::read_next(self)
+    }
+
+    #[inline]
+    fn unwind(&mut self) {
+        S::unwind(self);
+    }
+
+    #[inline]
+    fn pos(&self) -> usize {
+        S::pos(self)
+    }
+}

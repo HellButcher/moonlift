@@ -26,6 +26,16 @@ mod parser;
 mod parser_ast;
 mod source;
 
+pub mod gc {
+    //! Re-export and extend abfall GC types for Moonlift
+    pub use abfall::{GcContext as Gc, GcPtr as GcVal, GcRoot, GcCell, Trace, Tracer};
+    
+    /// Compatibility wrapper for the old Rooted type
+    pub type Rooted<'a, T> = T;
+    
+    /// Compatibility wrapper for GcRef
+    pub type GcRef<'a, T> = GcRoot<T>;
+}
 pub use val::Value;
 
 #[derive(thiserror::Error, Debug, PartialEq)]

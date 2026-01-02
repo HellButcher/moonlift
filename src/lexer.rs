@@ -143,6 +143,16 @@ mod utf8 {
     }
 }
 
+#[inline]
+fn hex_digit_value(c: u8) -> Option<u8> {
+    match c {
+        b'0'..=b'9' => Some(c - b'0'),
+        b'a'..=b'f' => Some(c - b'a' + 10),
+        b'A'..=b'F' => Some(c - b'A' + 10),
+        _ => None,
+    }
+}
+
 pub struct Lexer<S> {
     source: S,
     line: usize,
@@ -162,6 +172,233 @@ impl<T: AsRef<[u8]>> Lexer<BytesSource<T>> {
     }
 }
 
+pub struct NumLexer<S> {
+    source: S,
+    neg: bool,
+}
+
+impl<S: Source> NumLexer<S> {
+    #[inline]
+    pub const fn new(source: S) -> Self {
+        Self { source, neg: false }
+    }
+
+    pub fn next_number(&mut self) -> Result<Number, LexerError<S::Error>> {
+        let Some(c) = self.source.read_next()? else {
+            return Err(LexerError::UnexpectedEOF("number"));
+        };
+        match c {
+            b'-' => {
+                if let Some(c2) = self.source.read_next()? {
+                    match self.next_number_continue(c2) {
+                        Ok(Number::Integer(i)) => Ok(Number::Integer(-i)),
+                        Ok(Number::Float(f)) => Ok(Number::Float(-f)),
+                        Err(e) => Err(e),
+                    }
+                } else {
+                    Err(LexerError::UnexpectedEOF("number"))
+                }
+            }
+            b'+' => {
+                if let Some(c2) = self.source.read_next()? {
+                    self.next_number_continue(c2)
+                } else {
+                    Err(LexerError::UnexpectedEOF("number"))
+                }
+            }
+            _ => self.next_number_continue(c),
+        }
+    }
+
+    fn next_number_continue(&mut self, c: u8) -> Result<Number, LexerError<S::Error>> {
+        match c {
+            b'.' => match self.source.read_next()? {
+                Some(c @ (b'0'..=b'9')) => self.next_frac_continue(c),
+                _ => Err(LexerError::UnexpectedCharacter(c as char, "number")),
+            },
+            b'0'..=b'9' => {
+                if c == b'0' && matches!(self.source.read_next()?, Some(b'x' | b'X')) {
+                    let i = self.read_hex_integer()?;
+                    let mut c = self.source.read_next()?;
+                    if !matches!(c, Some(b'.' | b'e' | b'E' | b'p' | b'P')) {
+                        self.source.unwind();
+                        return Ok(Number::Integer(i));
+                    }
+                    let mut f = i as f64;
+                    if matches!(c, Some(b'.')) {
+                        let mut div = 1f64;
+                        loop {
+                            c = self.source.read_next()?;
+                            let Some(v) = c.and_then(hex_digit_value) else {
+                                break;
+                            };
+                            div *= 16f64;
+                            f *= 16f64;
+                            f += v as f64;
+                        }
+                        f /= div;
+                    }
+
+                    match c {
+                        Some(b'e' | b'E') => {
+                            f *= 10f64.powi(self.read_exponent()?);
+                        }
+                        Some(b'p' | b'P') => {
+                            f *= 2f64.powi(self.read_exponent()?);
+                        }
+                        Some(_) => self.source.unwind(),
+                        None => {}
+                    }
+
+                    Ok(Number::Float(f))
+                } else {
+                    self.source.unwind();
+                    let n = self.read_decimal_integer()?;
+                    let mut c = self.source.read_next()?;
+                    if !matches!(c, Some(b'.' | b'e' | b'E')) {
+                        self.source.unwind();
+                        return Ok(n);
+                    }
+                    let mut f = n.into_f64();
+
+                    if matches!(c, Some(b'.')) {
+                        let mut div = 1f64;
+                        loop {
+                            c = self.source.read_next()?;
+                            let Some(v) = c.and_then(Self::decimal_digit_value) else {
+                                break;
+                            };
+                            div *= 10f64;
+                            f *= 10f64;
+                            f += v as f64;
+                        }
+                        f /= div;
+                    }
+
+                    match c {
+                        Some(b'e' | b'E') => {
+                            f *= 10f64.powi(self.read_exponent()?);
+                        }
+                        Some(_) => self.source.unwind(),
+                        None => {}
+                    }
+
+                    Ok(Number::Float(f))
+                }
+            }
+            _ => Err(LexerError::UnexpectedCharacter(c as char, "number")),
+        }
+    }
+
+    fn next_frac_continue(&mut self, c: u8) -> Result<Number, LexerError<S::Error>> {
+        let mut div = 10f64;
+        let mut f = (c - b'0') as f64;
+        let mut c;
+        loop {
+            c = self.source.read_next()?;
+            let Some(v) = c.and_then(Self::decimal_digit_value) else {
+                break;
+            };
+            div *= 10f64;
+            f *= 10f64;
+            f += v as f64;
+        }
+        f /= div;
+
+        match c {
+            Some(b'e' | b'E') => {
+                f *= 10f64.powi(self.read_exponent()?);
+            }
+            Some(_) => self.source.unwind(),
+            None => {}
+        }
+
+        Ok(Number::Float(f))
+    }
+
+    #[inline]
+    fn decimal_digit_value(c: u8) -> Option<u8> {
+        match c {
+            b'0'..=b'9' => Some(c - b'0'),
+            _ => None,
+        }
+    }
+
+    fn read_decimal_integer(&mut self) -> Result<Number, LexerError<S::Error>> {
+        let mut result = 0i64;
+        while let Some(v) = self.source.read_next()?.and_then(Self::decimal_digit_value) {
+            if let Some(r) = result.checked_mul(10_i64) {
+                if let Some(r) = r.checked_add(v as i64) {
+                    result = r;
+                    continue;
+                }
+            }
+            // integer overflow: vonvert to float
+            let mut result = result as f64;
+            result *= 10f64;
+            result += v as f64;
+
+            while let Some(v) = self.source.read_next()?.and_then(Self::decimal_digit_value) {
+                result *= 10f64;
+                result += v as f64;
+            }
+
+            self.source.unwind();
+            return Ok(Number::Float(result));
+        }
+        self.source.unwind();
+        Ok(Number::Integer(result))
+    }
+
+    fn read_exponent(&mut self) -> Result<i32, LexerError<S::Error>> {
+        let mut c = self.source.read_next()?;
+        let negative = match c {
+            Some(b'-') => {
+                c = self.source.read_next()?;
+                true
+            }
+            Some(b'+') => {
+                c = self.source.read_next()?;
+                false
+            }
+            Some(b'0'..=b'9') => false,
+            Some(_) => {
+                self.source.unwind();
+                return Err(LexerError::InvalidNumber);
+            }
+            None => return Err(LexerError::UnexpectedEOF("number")),
+        };
+        let mut result = c
+            .and_then(Self::decimal_digit_value)
+            .ok_or(LexerError::InvalidNumber)? as i32;
+        while let Some(v) = self.source.read_next()?.and_then(Self::decimal_digit_value) {
+            result *= 10;
+            result += v as i32;
+        }
+        self.source.unwind();
+        if negative {
+            result *= -1;
+        }
+        Ok(result)
+    }
+
+    fn read_hex_integer(&mut self) -> Result<i64, LexerError<S::Error>> {
+        let mut result = 0u64;
+        while let Some(v) = self.source.read_next()?.and_then(hex_digit_value) {
+            result <<= 4;
+            result |= v as u64;
+        }
+        self.source.unwind();
+        Ok(result as i64)
+    }
+}
+
+impl Number {
+    pub fn coerce_from_string(s: &[u8]) -> Option<Self> {
+        NumLexer::new(BytesSource::new(s)).next_number().ok()
+    }
+}
+
 impl<S: Source> Lexer<S> {
     pub const fn new(source: S) -> Self {
         Self {
@@ -171,7 +408,9 @@ impl<S: Source> Lexer<S> {
             value: Vec::new(),
         }
     }
+}
 
+impl<S: Source> Lexer<S> {
     pub fn position(&self) -> Position {
         let pos = self.source.pos();
         Position {
@@ -278,31 +517,9 @@ impl<S: Source> Lexer<S> {
                         Ok(Token::Symbol(".."))
                     }
                 }
-                Some(c @ (b'0'..=b'9')) => {
-                    let mut div = 10f64;
-                    let mut f = (c - b'0') as f64;
-                    let mut c;
-                    loop {
-                        c = self.source.read_next()?;
-                        let Some(v) = c.and_then(Self::decimal_digit_value) else {
-                            break;
-                        };
-                        div *= 10f64;
-                        f *= 10f64;
-                        f += v as f64;
-                    }
-                    f /= div;
-
-                    match c {
-                        Some(b'e' | b'E') => {
-                            f *= 10f64.powi(self.read_exponent()?);
-                        }
-                        Some(_) => self.source.unwind(),
-                        None => {}
-                    }
-
-                    Ok(Token::Number(Number::Float(f)))
-                }
+                Some(c @ (b'0'..=b'9')) => NumLexer::new(&mut self.source)
+                    .next_frac_continue(c)
+                    .map(Token::Number),
                 _ => {
                     self.source.unwind();
                     Ok(Token::Symbol("."))
@@ -353,76 +570,9 @@ impl<S: Source> Lexer<S> {
                 let s = unsafe { String::from_utf8_unchecked(std::mem::take(&mut self.value)) };
                 Ok(Token::Name(s))
             }
-            b'0'..=b'9' => {
-                if c == b'0' && matches!(self.source.read_next()?, Some(b'x' | b'X')) {
-                    let i = self.read_hex_integer()?;
-                    let mut c = self.source.read_next()?;
-                    if !matches!(c, Some(b'.' | b'e' | b'E' | b'p' | b'P')) {
-                        self.source.unwind();
-                        return Ok(Token::Number(Number::Integer(i)));
-                    }
-                    let mut f = i as f64;
-                    if matches!(c, Some(b'.')) {
-                        let mut div = 1f64;
-                        loop {
-                            c = self.source.read_next()?;
-                            let Some(v) = c.and_then(Self::hex_digit_value) else {
-                                break;
-                            };
-                            div *= 16f64;
-                            f *= 16f64;
-                            f += v as f64;
-                        }
-                        f /= div;
-                    }
-
-                    match c {
-                        Some(b'e' | b'E') => {
-                            f *= 10f64.powi(self.read_exponent()?);
-                        }
-                        Some(b'p' | b'P') => {
-                            f *= 2f64.powi(self.read_exponent()?);
-                        }
-                        Some(_) => self.source.unwind(),
-                        None => {}
-                    }
-
-                    Ok(Token::Number(Number::Float(f)))
-                } else {
-                    self.source.unwind();
-                    let n = self.read_decimal_integer()?;
-                    let mut c = self.source.read_next()?;
-                    if !matches!(c, Some(b'.' | b'e' | b'E')) {
-                        self.source.unwind();
-                        return Ok(Token::Number(n));
-                    }
-                    let mut f = n.into_f64();
-
-                    if matches!(c, Some(b'.')) {
-                        let mut div = 1f64;
-                        loop {
-                            c = self.source.read_next()?;
-                            let Some(v) = c.and_then(Self::decimal_digit_value) else {
-                                break;
-                            };
-                            div *= 10f64;
-                            f *= 10f64;
-                            f += v as f64;
-                        }
-                        f /= div;
-                    }
-
-                    match c {
-                        Some(b'e' | b'E') => {
-                            f *= 10f64.powi(self.read_exponent()?);
-                        }
-                        Some(_) => self.source.unwind(),
-                        None => {}
-                    }
-
-                    Ok(Token::Number(Number::Float(f)))
-                }
-            }
+            b'0'..=b'9' => NumLexer::new(&mut self.source)
+                .next_number_continue(c)
+                .map(Token::Number),
             b' ' | b'\t' | b'\r' | b'\n' => {
                 let mut c = c;
                 loop {
@@ -650,12 +800,10 @@ impl<S: Source> Lexer<S> {
                     }
                     b'x' => {
                         // hex
-                        let Some(v) = self.source.read_next()?.and_then(Self::hex_digit_value)
-                        else {
+                        let Some(v) = self.source.read_next()?.and_then(hex_digit_value) else {
                             return Err(LexerError::InvalidEscapeSequence(c as char));
                         };
-                        let Some(v2) = self.source.read_next()?.and_then(Self::hex_digit_value)
-                        else {
+                        let Some(v2) = self.source.read_next()?.and_then(hex_digit_value) else {
                             return Err(LexerError::InvalidEscapeSequence(c as char));
                         };
                         v << 4 | v2
@@ -667,17 +815,16 @@ impl<S: Source> Lexer<S> {
                             eprintln!("Invalid unicode escape sequence: missing '{{'");
                             return Err(LexerError::InvalidEscapeSequence(c as char));
                         }
-                        let mut v = if let Some(v) =
-                            self.source.read_next()?.and_then(Self::hex_digit_value)
-                        {
-                            v as u32
-                        } else {
-                            #[cfg(debug_assertions)]
-                            eprintln!("Invalid unicode escape sequence: missing hex digit");
-                            return Err(LexerError::InvalidEscapeSequence(c as char));
-                        };
+                        let mut v =
+                            if let Some(v) = self.source.read_next()?.and_then(hex_digit_value) {
+                                v as u32
+                            } else {
+                                #[cfg(debug_assertions)]
+                                eprintln!("Invalid unicode escape sequence: missing hex digit");
+                                return Err(LexerError::InvalidEscapeSequence(c as char));
+                            };
                         for _ in 1..8 {
-                            let Some(v2) = self.source.read_next()?.and_then(Self::hex_digit_value)
+                            let Some(v2) = self.source.read_next()?.and_then(hex_digit_value)
                             else {
                                 self.source.unwind();
                                 break;
@@ -732,92 +879,6 @@ impl<S: Source> Lexer<S> {
             }
         }
         Err(LexerError::UnexpectedEOF("string"))
-    }
-
-    #[inline]
-    fn decimal_digit_value(c: u8) -> Option<u8> {
-        match c {
-            b'0'..=b'9' => Some(c - b'0'),
-            _ => None,
-        }
-    }
-
-    fn read_decimal_integer(&mut self) -> Result<Number, LexerError<S::Error>> {
-        let mut result = 0i64;
-        while let Some(v) = self.source.read_next()?.and_then(Self::decimal_digit_value) {
-            if let Some(r) = result.checked_mul(10_i64) {
-                if let Some(r) = r.checked_add(v as i64) {
-                    result = r;
-                    continue;
-                }
-            }
-            // integer overflow: vonvert to float
-            let mut result = result as f64;
-            result *= 10f64;
-            result += v as f64;
-
-            while let Some(v) = self.source.read_next()?.and_then(Self::decimal_digit_value) {
-                result *= 10f64;
-                result += v as f64;
-            }
-
-            self.source.unwind();
-            return Ok(Number::Float(result));
-        }
-        self.source.unwind();
-        Ok(Number::Integer(result))
-    }
-
-    fn read_exponent(&mut self) -> Result<i32, LexerError<S::Error>> {
-        let mut c = self.source.read_next()?;
-        let negative = match c {
-            Some(b'-') => {
-                c = self.source.read_next()?;
-                true
-            }
-            Some(b'+') => {
-                c = self.source.read_next()?;
-                false
-            }
-            Some(b'0'..=b'9') => false,
-            Some(_) => {
-                self.source.unwind();
-                return Err(LexerError::InvalidNumber);
-            }
-            None => return Err(LexerError::UnexpectedEOF("number")),
-        };
-        let mut result = c
-            .and_then(Self::decimal_digit_value)
-            .ok_or(LexerError::InvalidNumber)? as i32;
-        while let Some(v) = self.source.read_next()?.and_then(Self::decimal_digit_value) {
-            result *= 10;
-            result += v as i32;
-        }
-        self.source.unwind();
-        if negative {
-            result *= -1;
-        }
-        Ok(result)
-    }
-
-    #[inline]
-    fn hex_digit_value(c: u8) -> Option<u8> {
-        match c {
-            b'0'..=b'9' => Some(c - b'0'),
-            b'a'..=b'f' => Some(c - b'a' + 10),
-            b'A'..=b'F' => Some(c - b'A' + 10),
-            _ => None,
-        }
-    }
-
-    fn read_hex_integer(&mut self) -> Result<i64, LexerError<S::Error>> {
-        let mut result = 0u64;
-        while let Some(v) = self.source.read_next()?.and_then(Self::hex_digit_value) {
-            result <<= 4;
-            result |= v as u64;
-        }
-        self.source.unwind();
-        Ok(result as i64)
     }
 }
 

@@ -488,41 +488,37 @@ define_opcodes! {
 
     // Jump if A < D
     IsLt(a: var, d: var) {
-        // if vm.get(a) >= vm.get(d) {
-        //     vm.pc += 1;
-        // }
-        todo!();
+        if !vm.is_meta_lt(vm.get(a), vm.get(d)).unwrap_or(false) {
+            vm.pc += 1;
+        }
     },
     // Jump if A ≥ D
     IsGe(a: var, d: var) {
-        // if vm.get(a) < vm.get(d) {
-        //     vm.pc += 1;
-        // }
-        todo!();
+        if vm.is_meta_lt(vm.get(a), vm.get(d)).unwrap_or(true) {
+            vm.pc += 1;
+        }
     },
     // Jump if A ≤ D
     IsLe(a: var, d: var) {
-        // if vm.get(a) > vm.get(d) {
-        //     vm.pc += 1;
-        // }
-        todo!();
+        if !vm.is_meta_le(vm.get(a), vm.get(d)).unwrap_or(false) {
+            vm.pc += 1;
+        }
     },
     // Jump if A > D
     IsGt(a: var, d: var) {
-        // if vm.get(a) <= vm.get(d) {
-        //     vm.pc += 1;
-        // }
-        todo!();
+        if vm.is_meta_le(vm.get(a), vm.get(d)).unwrap_or(true) {
+            vm.pc += 1;
+        }
     },
     // Jump if A = D
     IsEqV(a: var, d: var) {
-        if vm.get(a) != vm.get(d) {
+        if !vm.is_meta_eq(vm.get(a), vm.get(d)) {
             vm.pc += 1;
         }
     },
     // Jump if A ≠ D
     IsNeV(a: var, d: var) {
-        if vm.get(a) == vm.get(d) {
+        if vm.is_meta_eq(vm.get(a), vm.get(d)) {
             vm.pc += 1;
         }
     },
@@ -600,18 +596,19 @@ define_opcodes! {
     },
     // Set A to boolean not of D
     Not(a: dst, d: var) {
-        //vm.set(a, !vm.get(d));
-        todo!();
+        if vm.get(d).is_truthy() {
+            vm.set(a, Value::FALSE);
+        } else {
+            vm.set(a, Value::TRUE);
+        }
     },
     // Set A to -D (unary minus)
     UNM(a: dst, d: var) {
-        //vm.set(a, -vm.get(d));
-        todo!();
+        vm.set(a, vm.meta_minus(vm.get(d)));
     },
     // Set A to #D (object length)
     Len(a: dst, d: var) {
-        // TODO
-        todo!();
+        vm.set(a, Value::from_u64(vm.meta_len(vm.get(d)).unwrap_or(0) as u64));
     },
 
     /*
@@ -660,70 +657,57 @@ define_opcodes! {
 
     // A = B + C
     AddVV(a: dst, b: var, c: var) {
-      // let a = b + c;
-      todo!();
+      vm.set(a, vm.meta_add(vm.get(b), vm.get(c)));
     },
     // A = B - C
     SubVV(a: dst, b: var, c: var) {
-      // let a = b - c;
-      todo!();
+      vm.set(a, vm.meta_sub(vm.get(b), vm.get(c)));
     },
     // A = B * C
     MulVV(a: dst, b: var, c: var) {
-      // let a = b * c;
-      todo!();
+      vm.set(a, vm.meta_mul(vm.get(b), vm.get(c)));
     },
     // A = B / C
     DivVV(a: dst, b: var, c: var) {
-      // let a = b / c;
-      todo!();
+      vm.set(a, vm.meta_div(vm.get(b), vm.get(c)));
     },
     // A = B // C (integer division)
     IDivVV(a: dst, b: var, c: var) {
-      // let a = b / c;
-      todo!();
+      vm.set(a, vm.meta_idiv(vm.get(b), vm.get(c)));
     },
     // A = B % C
     ModVV(a: dst, b: var, c: var) {
-      // let a = b % c;
-      todo!();
+      vm.set(a, vm.meta_mod(vm.get(b), vm.get(c)));
     },
 
     // Set A bitwise not of D
     BNot(a: dst, d: var) {
-      //let a = !d;
-      todo!();
+      vm.set(a, vm.meta_bit_not(vm.get(d)));
     },
     // A = B & C (bit and)
     BAndVV(a: dst, b: var, c: var) {
-      //let a = b & c;
-      todo!();
+      vm.set(a, vm.meta_bit_and(vm.get(b), vm.get(c)));
     },
     // A = B | C (bit or)
     BOrVV(a: dst, b: var, c: var) {
-      //let a = b & c;
-      todo!();
+      vm.set(a, vm.meta_bit_or(vm.get(b), vm.get(c)));
     },
     // A = B ~ C (bit or)
     BXorVV(a: dst, b: var, c: var) {
-      //let a = b ^ c;
-      todo!();
+      vm.set(a, vm.meta_bit_xor(vm.get(b), vm.get(c)));
     },
     // A = B << C (shift left)
     ShLVV(a: dst, b: var, c: var) {
-      //let a = b << c;
-      todo!();
+      vm.set(a, vm.meta_bit_shl(vm.get(b), vm.get(c)));
     },
     // A = B >> C (shift right)
     ShRVV(a: dst, b: var, c: var) {
-      //let a = b >> c;
-      todo!();
+      vm.set(a, vm.meta_bit_shr(vm.get(b), vm.get(c)));
     },
 
     // A = B ^ C
     Pow(a: dst, b: var, c: var) {
-      //let a = b.pow(c);
-      todo!();
+      vm.set(a, vm.meta_bit_pow(vm.get(b), vm.get(c)));
     },
     // A = B .. ~ .. C
     Cat(a: dst, b: rbase, c: rbase) {
@@ -813,13 +797,11 @@ define_opcodes! {
     // },
     // A = G[D] (global get)
     GGet(a: dst, d: str) {
-      // TODO
-      todo!();
+      vm.set(a, vm.get_table(vm.global, vm.get_const(d)));
     },
     // G[D] = A (global set)
     GSet(a: var, d: str) {
-      // TODO
-      todo!();
+      vm.set_table(vm.global, vm.get_const(d), vm.get(a));
     },
     // A = B[C]
     TGetV(a: dst, b: var, c: var) {

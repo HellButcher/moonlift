@@ -1,7 +1,12 @@
-use crate::val::Value;
+use crate::{
+    gc::Gc,
+    val::{TypeTag, Value},
+};
 
 pub struct VM {
     pub pc: usize,
+    pub gc: Gc,
+    pub global: Value,
 }
 
 impl VM {
